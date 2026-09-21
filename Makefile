@@ -1,4 +1,4 @@
-.PHONY: build run test test-db cover lint fmt up down clean migrate-new
+.PHONY: build run test test-db cover lint fmt up down clean migrate-new bench
 
 MIGRATIONS_DIR := internal/store/migrations
 
@@ -14,6 +14,10 @@ run: build
 
 test:
 	go test ./...
+
+# Rule-evaluation hot path. Does not run as part of `make test` / `go test ./...`.
+bench:
+	go test -bench=. -benchmem ./internal/rules/...
 
 # Run all tests including the store integration tests, against the
 # docker-compose Postgres (make up first, or any Postgres you point at).
