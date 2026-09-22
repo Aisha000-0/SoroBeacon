@@ -118,6 +118,91 @@ func TestMonitorsPageFilterControlsAndPreservedPaging(t *testing.T) {
 	}
 }
 
+type alertPagingStore struct {
+	emptyStore
+	n int
+}
+
+func (p alertPagingStore) ListAlerts(context.Context, store.AlertFilter) ([]store.Alert, error) {
+	out := make([]store.Alert, p.n)
+	for i := range out {
+		out[i] = store.Alert{ID: int64(i + 1)}
+	}
+	return out, nil
+}
+
+func TestAlertsPageShowsOlderLinkOnFullPage(t *testing.T) {
+	s, err := New(alertPagingStore{n: 50}, rules.NewRegistry(), notify.DefaultFactory(), slog.New(slog.NewTextHandler(os.Stdout, nil)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	srv := httptest.NewServer(s.Routes())
+	defer srv.Close()
+	res, err := http.Get(srv.URL + "/alerts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	if !strings.Contains(html, `/alerts?cursor=50`) {
+		t.Fatalf("expected Older paging link for a full page, got:\n%s", html)
+	}
+}
+
+func TestAlertsPageFilterControlsAndPreservedPaging(t *testing.T) {
+	s, err := New(alertPagingStore{n: 50}, rules.NewRegistry(), notify.DefaultFactory(), slog.New(slog.NewTextHandler(os.Stdout, nil)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	srv := httptest.NewServer(s.Routes())
+	defer srv.Close()
+	res, err := http.Get(srv.URL + "/alerts?monitor_id=7&rule_id=9&contract_id=CAAA&sort=created_at_asc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	if !strings.Contains(html, `name="rule_id"`) || !strings.Contains(html, `name="contract_id"`) || !strings.Contains(html, `name="sort"`) {
+		t.Fatalf("expected filter controls, got:\n%s", html)
+	}
+	if !strings.Contains(html, `value="CAAA"`) {
+		t.Fatalf("expected contract_id populated, got:\n%s", html)
+	}
+	if !strings.Contains(html, `value="created_at_asc" selected`) && !strings.Contains(html, `<option value="created_at_asc" selected`) {
+		t.Fatalf("expected oldest sort selected, got:\n%s", html)
+	}
+	if !strings.Contains(html, `/alerts?`) || !strings.Contains(html, `cursor=50`) {
+		t.Fatalf("expected Older link to keep cursor, got:\n%s", html)
+	}
+	if !strings.Contains(html, `monitor_id=7`) || !strings.Contains(html, `rule_id=9`) ||
+		!strings.Contains(html, `contract_id=CAAA`) || !strings.Contains(html, `sort=created_at_asc`) {
+		t.Fatalf("expected Older link to preserve filters, got:\n%s", html)
+	}
+}
+
+func TestAlertFilterQueryOmitsDefaults(t *testing.T) {
+	if got := alertFilterQuery(0, 0, "", ""); got != "" {
+		t.Fatalf("defaults = %q, want empty so ?cursor= stays stable", got)
+	}
+	if got := alertFilterQuery(0, 0, "", "created_at_desc"); got != "" {
+		t.Fatalf("default sort = %q, want empty", got)
+	}
+	got := alertFilterQuery(7, 9, "CAAA", "created_at_asc")
+	if !strings.Contains(got, "monitor_id=7") || !strings.Contains(got, "rule_id=9") ||
+		!strings.Contains(got, "contract_id=CAAA") || !strings.Contains(got, "sort=created_at_asc") ||
+		!strings.HasSuffix(got, "&") {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestMonitorFilterQueryOmitsDefaults(t *testing.T) {
 	if got := monitorFilterQuery("", "", ""); got != "" {
 		t.Fatalf("defaults = %q, want empty so ?cursor= stays stable", got)

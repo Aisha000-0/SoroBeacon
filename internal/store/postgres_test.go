@@ -292,6 +292,97 @@ func TestAlertDedupAndListing(t *testing.T) {
 	assert.Empty(t, list)
 }
 
+func TestListAlertsSearchFilterSort(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	m1 := &Monitor{Name: "m1", ContractIDs: []string{"CAAA"}, Enabled: true}
+	require.NoError(t, st.CreateMonitor(ctx, m1))
+	m2 := &Monitor{Name: "m2", ContractIDs: []string{"CBBB"}, Enabled: true}
+	require.NoError(t, st.CreateMonitor(ctx, m2))
+	r1 := &Rule{MonitorID: m1.ID, Type: "event_emitted", Params: json.RawMessage(`{}`), Enabled: true}
+	require.NoError(t, st.CreateRule(ctx, r1))
+	r2 := &Rule{MonitorID: m2.ID, Type: "event_emitted", Params: json.RawMessage(`{}`), Enabled: true}
+	require.NoError(t, st.CreateRule(ctx, r2))
+
+	payloads := []struct {
+		monitor *Monitor
+		rule    *Rule
+		event   string
+		payload string
+	}{
+		{m1, r1, "ev-a1", `{"contract_id":"CAAA"}`},
+		{m1, r1, "ev-a2", `{"contract_id":"CAAA"}`},
+		{m1, r1, "ev-a3", `{"contract_id":"CZZZ"}`},
+		{m2, r2, "ev-b1", `{"contract_id":"CBBB"}`},
+		{m2, r2, "ev-b2", `{"contract_id":"CBBB"}`},
+		{m2, r2, "ev-b3", `{"contract_id":"CBBB"}`},
+		{m2, r2, "ev-b4", `{"contract_id":"CBBB"}`},
+	}
+	var created []Alert
+	for _, p := range payloads {
+		a := &Alert{
+			MonitorID: p.monitor.ID, RuleID: p.rule.ID, EventID: p.event,
+			Payload: json.RawMessage(p.payload),
+		}
+		ok, err := st.CreateAlert(ctx, a)
+		require.NoError(t, err)
+		require.True(t, ok)
+		created = append(created, *a)
+	}
+
+	byRule, err := st.ListAlerts(ctx, AlertFilter{RuleID: r1.ID, Limit: 50})
+	require.NoError(t, err)
+	require.Len(t, byRule, 3)
+	for _, a := range byRule {
+		assert.Equal(t, r1.ID, a.RuleID)
+	}
+
+	byContract, err := st.ListAlerts(ctx, AlertFilter{ContractID: "CAAA", Limit: 50})
+	require.NoError(t, err)
+	require.Len(t, byContract, 2)
+
+	composed, err := st.ListAlerts(ctx, AlertFilter{MonitorID: m1.ID, RuleID: r1.ID, ContractID: "CAAA", Limit: 50})
+	require.NoError(t, err)
+	require.Len(t, composed, 2)
+
+	// Paging in both directions must cover every id once: no duplicates, no gaps.
+	pageIDs := func(sort string, limit int) []int64 {
+		t.Helper()
+		var ids []int64
+		seen := map[int64]bool{}
+		var after int64
+		for i := 0; i < 10; i++ {
+			page, err := st.ListAlerts(ctx, AlertFilter{Sort: sort, Limit: limit, AfterID: after})
+			require.NoError(t, err)
+			if len(page) == 0 {
+				break
+			}
+			for _, a := range page {
+				if seen[a.ID] {
+					t.Fatalf("duplicate id %d under sort %s", a.ID, sort)
+				}
+				seen[a.ID] = true
+				ids = append(ids, a.ID)
+			}
+			if len(page) < limit {
+				break
+			}
+			after = page[len(page)-1].ID
+		}
+		return ids
+	}
+
+	desc := pageIDs("created_at_desc", 3)
+	asc := pageIDs("created_at_asc", 3)
+	require.Len(t, desc, len(created))
+	require.Len(t, asc, len(created))
+	assert.Equal(t, created[len(created)-1].ID, desc[0], "desc starts at newest")
+	assert.Equal(t, created[0].ID, asc[0], "asc starts at oldest")
+	assert.Equal(t, desc[0], asc[len(asc)-1])
+	assert.Equal(t, desc[len(desc)-1], asc[0])
+}
+
 func TestDeliveryAttempts(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()

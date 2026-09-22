@@ -9,7 +9,9 @@ import (
 )
 
 // listAlerts serves GET /alerts with query filters:
-// monitor_id, from, to (RFC 3339), limit, cursor (last seen alert id).
+// monitor_id, rule_id, contract_id, from, to (RFC 3339), sort
+// (created_at_desc default, created_at_asc), limit, cursor (last seen
+// alert id; comparison follows sort).
 func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	var f store.AlertFilter
@@ -21,6 +23,24 @@ func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.MonitorID = id
+	}
+	if v := q.Get("rule_id"); v != "" {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			writeErr(w, r, http.StatusBadRequest, "invalid rule_id")
+			return
+		}
+		f.RuleID = id
+	}
+	f.ContractID = q.Get("contract_id")
+	if v := q.Get("sort"); v != "" {
+		switch v {
+		case "created_at_desc", "created_at_asc":
+			f.Sort = v
+		default:
+			writeErr(w, r, http.StatusBadRequest, "invalid sort")
+			return
+		}
 	}
 	for name, dst := range map[string]*time.Time{"from": &f.From, "to": &f.To} {
 		if v := q.Get(name); v != "" {
