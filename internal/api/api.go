@@ -86,6 +86,7 @@ func (s *Server) Routes() chi.Router {
 	r.Route("/monitors", func(r chi.Router) {
 		r.Post("/", s.createMonitor)
 		r.Get("/", s.listMonitors)
+		r.Post("/bulk", s.bulkMonitors)
 		r.Route("/{id}", func(r chi.Router) {
 			r.Get("/", s.getMonitor)
 			r.Patch("/", s.updateMonitor)

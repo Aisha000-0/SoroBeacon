@@ -18,10 +18,21 @@
   <button>Filter</button>
 </form>
 {{if .Monitors}}
+<form id="bulk-monitors" method="post" action="/monitors/bulk">
+<p>
+  <button type="submit" name="enabled" value="true">Enable selected</button>
+  <button type="submit" name="enabled" value="false">Disable selected</button>
+  <span class="muted">Select monitors, then enable or disable them in one step. There is no “all monitors” action.</span>
+</p>
+</form>
 <table>
-  <tr><th>ID</th><th>Name</th><th>Contracts</th><th>Status</th><th></th></tr>
+  <tr>
+    <th><input type="checkbox" aria-label="Select all" onclick="document.querySelectorAll('input[name=ids]').forEach(c => c.checked = this.checked)"></th>
+    <th>ID</th><th>Name</th><th>Contracts</th><th>Status</th><th></th>
+  </tr>
   {{range .Monitors}}
   <tr>
+    <td><input type="checkbox" form="bulk-monitors" name="ids" value="{{.ID}}" aria-label="Select monitor {{.Name}}"></td>
     <td>{{.ID}}</td>
     <td><a href="/monitors/{{.ID}}">{{.Name}}</a></td>
     <td>{{range .ContractIDs}}<code>{{.}}</code><br>{{end}}</td>

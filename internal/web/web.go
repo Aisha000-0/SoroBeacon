@@ -119,6 +119,7 @@ func (s *Server) Routes() chi.Router {
 
 	r.Get("/monitors", s.monitors)
 	r.Post("/monitors", s.createMonitor)
+	r.Post("/monitors/bulk", s.bulkMonitors)
 	r.Get("/monitors/{id}", s.monitorDetail)
 	r.Post("/monitors/{id}/toggle", s.toggleMonitor)
 	r.Post("/monitors/{id}/delete", s.deleteMonitor)
@@ -389,6 +390,37 @@ func (s *Server) monitorDetail(w http.ResponseWriter, r *http.Request) {
 		"Title": m.Name, "Monitor": m, "Rules": ruleList,
 		"Channels": channels, "Attached": attached, "RuleTypes": s.registry.Types(),
 	})
+}
+
+func (s *Server) bulkMonitors(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	enabledStr := r.FormValue("enabled")
+	if enabledStr != "true" && enabledStr != "false" {
+		http.Error(w, "enabled is required", http.StatusBadRequest)
+		return
+	}
+	raw := r.Form["ids"]
+	if len(raw) == 0 {
+		http.Error(w, "ids is required", http.StatusBadRequest)
+		return
+	}
+	ids := make([]int64, 0, len(raw))
+	for _, v := range raw {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+		ids = append(ids, id)
+	}
+	if _, _, err := s.store.SetMonitorsEnabled(r.Context(), ids, enabledStr == "true"); err != nil {
+		s.fail(w, err)
+		return
+	}
+	http.Redirect(w, r, "/monitors", http.StatusSeeOther)
 }
 
 func (s *Server) toggleMonitor(w http.ResponseWriter, r *http.Request) {
