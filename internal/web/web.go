@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"log/slog"
@@ -52,6 +53,29 @@ type Server struct {
 // templateFuncs are available to every page template.
 var templateFuncs = template.FuncMap{
 	"prettyJSON": prettyJSON,
+	"formatTime": formatTime,
+}
+
+const tsLayout = "2006-01-02 15:04:05"
+
+// formatTime is the only dashboard timestamp renderer. The server always
+// emits labelled UTC so a viewer with JavaScript disabled still knows the
+// zone; when the preference is "local", a data-tz attribute lets the
+// browser rewrite the visible text to the viewer's zone after load.
+func formatTime(t time.Time, tz string) template.HTML {
+	if t.IsZero() {
+		return ""
+	}
+	utc := t.UTC()
+	label := utc.Format(tsLayout) + " UTC"
+	return template.HTML(fmt.Sprintf(
+		`<time datetime="%s" data-tz="%s">%s</time>`,
+		template.HTMLEscapeString(utc.Format(time.RFC3339)),
+		template.HTMLEscapeString(parseTZ(tz)),
+		template.HTMLEscapeString(label),
+	))
+	"prettyJSON":   prettyJSON,
+	"decodedEvent": decodedEvent,
 }
 
 // prettyJSON indents raw JSON for display. Invalid or empty input falls
@@ -93,12 +117,14 @@ func (s *Server) Routes() chi.Router {
 	r.Get("/", s.index)
 	r.Get("/favicon.ico", s.favicon)
 	r.Post("/theme", s.setTheme)
+	r.Post("/timezone", s.setTimezone)
 
 	r.Get("/monitors", s.monitors)
 	r.Post("/monitors", s.createMonitor)
 	r.Get("/monitors/{id}", s.monitorDetail)
 	r.Post("/monitors/{id}/toggle", s.toggleMonitor)
 	r.Post("/monitors/{id}/delete", s.deleteMonitor)
+	r.Post("/monitors/{id}/duplicate", s.duplicateMonitor)
 	r.Post("/monitors/{id}/rules", s.createRule)
 	r.Post("/monitors/{id}/rules/{ruleID}/toggle", s.toggleRule)
 	r.Post("/monitors/{id}/rules/{ruleID}/delete", s.deleteRule)
@@ -130,6 +156,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, dat
 	if m, ok := data.(map[string]any); ok {
 		m["Active"] = navSection[page]
 		m["Theme"] = themeFromRequest(r)
+		m["Timezone"] = tzFromRequest(r)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.pages[page].ExecuteTemplate(w, "layout", data); err != nil {
@@ -165,6 +192,31 @@ func themeFromRequest(r *http.Request) string {
 }
 
 // safeReturn keeps the theme POST from bouncing to an external Referer.
+	tzCookie       = "tz"
+	tzCookieMaxAge = 365 * 24 * 3600
+)
+
+// parseTZ allowlists the two dashboard timezone states. Anything else
+// (missing cookie, typos, empty) is UTC so existing unlabelled times
+// become labelled UTC rather than silently switching zone.
+func parseTZ(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "local":
+		return "local"
+	default:
+		return "utc"
+	}
+}
+
+func tzFromRequest(r *http.Request) string {
+	c, err := r.Cookie(tzCookie)
+	if err != nil {
+		return "utc"
+	}
+	return parseTZ(c.Value)
+}
+
+// safeReturn keeps the timezone POST from bouncing to an external Referer.
 func safeReturn(r *http.Request) string {
 	ref := r.Header.Get("Referer")
 	if ref == "" {
@@ -188,6 +240,9 @@ func safeReturn(r *http.Request) string {
 // the next render already has the right data-theme (no flash of the other
 // scheme from a client-side fix-up).
 func (s *Server) setTheme(w http.ResponseWriter, r *http.Request) {
+// setTimezone persists the dashboard timezone in a cookie and redirects
+// back so the next render already has the right data-tz values.
+func (s *Server) setTimezone(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
@@ -198,6 +253,12 @@ func (s *Server) setTheme(w http.ResponseWriter, r *http.Request) {
 		Value:    theme,
 		Path:     "/",
 		MaxAge:   themeCookieMaxAge,
+	tz := parseTZ(r.FormValue("tz"))
+	http.SetCookie(w, &http.Cookie{
+		Name:     tzCookie,
+		Value:    tz,
+		Path:     "/",
+		MaxAge:   tzCookieMaxAge,
 		SameSite: http.SameSiteLaxMode,
 	})
 	http.Redirect(w, r, safeReturn(r), http.StatusSeeOther)
@@ -387,6 +448,24 @@ func (s *Server) toggleMonitor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/monitors", http.StatusSeeOther)
+}
+
+func (s *Server) duplicateMonitor(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	m, err := s.store.DuplicateMonitor(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		s.fail(w, err)
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("/monitors/%d", m.ID), http.StatusSeeOther)
 }
 
 func (s *Server) deleteMonitor(w http.ResponseWriter, r *http.Request) {
@@ -659,7 +738,7 @@ func (s *Server) alertDeliveries(w http.ResponseWriter, r *http.Request) {
 			template.HTMLEscapeString(names[a.ChannelID]),
 			pillClass, template.HTMLEscapeString(a.Status),
 			template.HTMLEscapeString(a.ResponseSnippet),
-			template.HTMLEscapeString(a.AttemptedAt.Format("2006-01-02 15:04:05")))
+			formatTime(a.AttemptedAt, tzFromRequest(r)))
 	}
 	fmt.Fprint(w, `</table>`)
 }

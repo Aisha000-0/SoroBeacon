@@ -3,6 +3,10 @@
   {{if .Monitor.Enabled}}<span class="pill on">enabled</span>{{else}}<span class="pill off">disabled</span>{{end}}
 </h1>
 <p class="muted">Contracts: {{range .Monitor.ContractIDs}}<code>{{.}}</code> {{end}}</p>
+<form class="inline" method="post" action="/monitors/{{.Monitor.ID}}/duplicate">
+  <button>Duplicate</button>
+</form>
+<p class="muted">Duplicate copies rules and channel attachments under a new name, created disabled so it cannot alert until reviewed.</p>
 
 <h2>Rules</h2>
 {{if .Rules}}
