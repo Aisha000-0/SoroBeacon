@@ -575,6 +575,102 @@ func TestPrettyJSON(t *testing.T) {
 	}
 }
 
+func TestThemeAttributeReflectsCookie(t *testing.T) {
+	srv := httptest.NewServer(newTestServer(t).Routes())
+	defer srv.Close()
+
+	tests := []struct {
+		cookie string
+		want   string
+	}{
+		{"", `<html lang="en" data-theme="system">`},
+		{"system", `<html lang="en" data-theme="system">`},
+		{"light", `<html lang="en" data-theme="light">`},
+		{"dark", `<html lang="en" data-theme="dark">`},
+		{"garbage", `<html lang="en" data-theme="system">`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cookie, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, srv.URL+"/", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.cookie != "" {
+				req.AddCookie(&http.Cookie{Name: themeCookie, Value: tt.cookie})
+			}
+			res, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer res.Body.Close()
+			body, err := io.ReadAll(res.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			html := string(body)
+			if !strings.Contains(html, tt.want) {
+				head := html
+				if len(head) > 400 {
+					head = head[:400]
+				}
+				t.Fatalf("missing %q in %s", tt.want, head)
+			}
+			if !strings.Contains(html, `action="/theme"`) || !strings.Contains(html, `name="theme"`) {
+				t.Fatal("theme toggle missing from layout")
+			}
+		})
+	}
+}
+
+func TestSetThemeWritesCookieAndRedirects(t *testing.T) {
+	srv := httptest.NewServer(newTestServer(t).Routes())
+	defer srv.Close()
+
+	client := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/theme", strings.NewReader("theme=dark"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Referer", srv.URL+"/monitors")
+	res, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /theme = %d, want 303", res.StatusCode)
+	}
+	if loc := res.Header.Get("Location"); loc != "/monitors" {
+		t.Fatalf("Location = %q, want /monitors", loc)
+	}
+	var got string
+	for _, c := range res.Cookies() {
+		if c.Name == themeCookie {
+			got = c.Value
+		}
+	}
+	if got != "dark" {
+		t.Fatalf("theme cookie = %q, want dark", got)
+	}
+}
+
+func TestSafeReturnRejectsExternalReferer(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "http://beacon.test/theme", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "beacon.test"
+	req.Header.Set("Referer", "https://evil.example/steal")
+	if got := safeReturn(req); got != "/" {
+		t.Fatalf("external referer = %q, want /", got)
+	}
+}
+
 // alertWithPayloadStore returns one alert with an object payload, so the
 // alerts page has something to indent.
 type alertWithPayloadStore struct {

@@ -115,6 +115,7 @@ func (s *Server) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", s.index)
 	r.Get("/favicon.ico", s.favicon)
+	r.Post("/theme", s.setTheme)
 	r.Post("/timezone", s.setTimezone)
 
 	r.Get("/monitors", s.monitors)
@@ -154,6 +155,7 @@ var navSection = map[string]string{
 func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, data any) {
 	if m, ok := data.(map[string]any); ok {
 		m["Active"] = navSection[page]
+		m["Theme"] = themeFromRequest(r)
 		m["Timezone"] = tzFromRequest(r)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -163,6 +165,33 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, dat
 }
 
 const (
+	themeCookie       = "theme"
+	themeCookieMaxAge = 365 * 24 * 3600
+)
+
+// parseTheme allowlists the three dashboard theme states. Anything else
+// (missing cookie, typos, empty) is "system" so existing users keep the
+// OS-follow default.
+func parseTheme(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "light":
+		return "light"
+	case "dark":
+		return "dark"
+	default:
+		return "system"
+	}
+}
+
+func themeFromRequest(r *http.Request) string {
+	c, err := r.Cookie(themeCookie)
+	if err != nil {
+		return "system"
+	}
+	return parseTheme(c.Value)
+}
+
+// safeReturn keeps the theme POST from bouncing to an external Referer.
 	tzCookie       = "tz"
 	tzCookieMaxAge = 365 * 24 * 3600
 )
@@ -207,6 +236,10 @@ func safeReturn(r *http.Request) string {
 	return p
 }
 
+// setTheme persists the dashboard theme in a cookie and redirects back so
+// the next render already has the right data-theme (no flash of the other
+// scheme from a client-side fix-up).
+func (s *Server) setTheme(w http.ResponseWriter, r *http.Request) {
 // setTimezone persists the dashboard timezone in a cookie and redirects
 // back so the next render already has the right data-tz values.
 func (s *Server) setTimezone(w http.ResponseWriter, r *http.Request) {
@@ -214,6 +247,12 @@ func (s *Server) setTimezone(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+	theme := parseTheme(r.FormValue("theme"))
+	http.SetCookie(w, &http.Cookie{
+		Name:     themeCookie,
+		Value:    theme,
+		Path:     "/",
+		MaxAge:   themeCookieMaxAge,
 	tz := parseTZ(r.FormValue("tz"))
 	http.SetCookie(w, &http.Cookie{
 		Name:     tzCookie,
