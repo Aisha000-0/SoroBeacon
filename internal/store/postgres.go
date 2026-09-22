@@ -152,6 +152,86 @@ func (p *Postgres) DeleteMonitor(ctx context.Context, id int64) error {
 	return p.deleteByID(ctx, "monitors", id)
 }
 
+func (p *Postgres) DuplicateMonitor(ctx context.Context, id int64) (*Monitor, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // rollback after commit is a no-op
+
+	src, err := scanMonitor(tx.QueryRow(ctx,
+		`SELECT id, name, contract_ids, enabled, created_at FROM monitors WHERE id = $1`, id))
+	if err != nil {
+		return nil, err
+	}
+	chRows, err := tx.Query(ctx,
+		`SELECT channel_id FROM monitor_channels WHERE monitor_id = $1 ORDER BY channel_id`, id)
+	if err != nil {
+		return nil, err
+	}
+	src.ChannelIDs, err = pgx.CollectRows(chRows, pgx.RowTo[int64])
+	if err != nil {
+		return nil, err
+	}
+	ruleRows, err := tx.Query(ctx,
+		`SELECT type, params, enabled FROM rules WHERE monitor_id = $1 ORDER BY id`, id)
+	if err != nil {
+		return nil, err
+	}
+	rules, err := pgx.CollectRows(ruleRows, func(row pgx.CollectableRow) (Rule, error) {
+		var r Rule
+		err := row.Scan(&r.Type, &r.Params, &r.Enabled)
+		return r, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	nameRows, err := tx.Query(ctx, `SELECT name FROM monitors`)
+	if err != nil {
+		return nil, err
+	}
+	names, err := pgx.CollectRows(nameRows, pgx.RowTo[string])
+	if err != nil {
+		return nil, err
+	}
+
+	ids, err := json.Marshal(src.ContractIDs)
+	if err != nil {
+		return nil, err
+	}
+	copy := Monitor{
+		Name:        CopyMonitorName(src.Name, names),
+		ContractIDs: src.ContractIDs,
+		Enabled:     false, // never inherit enabled: a duplicate must be reviewed first
+	}
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO monitors (name, contract_ids, enabled) VALUES ($1, $2, $3)
+		 RETURNING id, created_at`,
+		copy.Name, ids, copy.Enabled,
+	).Scan(&copy.ID, &copy.CreatedAt); err != nil {
+		return nil, err
+	}
+	for _, r := range rules {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO rules (monitor_id, type, params, enabled) VALUES ($1, $2, $3, $4)`,
+			copy.ID, r.Type, jsonOrEmpty(r.Params), r.Enabled); err != nil {
+			return nil, err
+		}
+	}
+	for _, cid := range src.ChannelIDs {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO monitor_channels (monitor_id, channel_id) VALUES ($1, $2)`,
+			copy.ID, cid); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	copy.ChannelIDs = src.ChannelIDs
+	return &copy, nil
+}
+
 func (p *Postgres) SetMonitorChannels(ctx context.Context, monitorID int64, channelIDs []int64) error {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
