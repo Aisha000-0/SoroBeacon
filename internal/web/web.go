@@ -185,12 +185,20 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) monitors(w http.ResponseWriter, r *http.Request) {
-	monitors, err := s.store.ListMonitors(r.Context(), false)
+	f := store.ListFilter{Limit: 50}
+	if v := r.URL.Query().Get("cursor"); v != "" {
+		f.AfterID, _ = strconv.ParseInt(v, 10, 64)
+	}
+	monitors, err := s.store.ListMonitorsPage(r.Context(), f)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	s.render(w, "monitors", map[string]any{"Title": "Monitors", "Monitors": monitors})
+	next := ""
+	if len(monitors) == f.Limit {
+		next = strconv.FormatInt(monitors[len(monitors)-1].ID, 10)
+	}
+	s.render(w, "monitors", map[string]any{"Title": "Monitors", "Monitors": monitors, "NextCursor": next})
 }
 
 func (s *Server) createMonitor(w http.ResponseWriter, r *http.Request) {
@@ -374,13 +382,22 @@ func (s *Server) setMonitorChannels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) channels(w http.ResponseWriter, r *http.Request) {
-	channels, err := s.store.ListChannels(r.Context(), false)
+	f := store.ListFilter{Limit: 50}
+	if v := r.URL.Query().Get("cursor"); v != "" {
+		f.AfterID, _ = strconv.ParseInt(v, 10, 64)
+	}
+	channels, err := s.store.ListChannelsPage(r.Context(), f)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
+	next := ""
+	if len(channels) == f.Limit {
+		next = strconv.FormatInt(channels[len(channels)-1].ID, 10)
+	}
 	s.render(w, "channels", map[string]any{
 		"Title": "Channels", "Channels": channels, "ChannelTypes": s.factory.Types(),
+		"NextCursor": next,
 	})
 }
 

@@ -98,6 +98,11 @@ func run() error {
 	apiSrv := api.New(st, registry, factory, health, log).
 		WithPoller(p).
 		WithReadyzLagThreshold(cfg.ReadyzLagThreshold)
+	apiSrv := api.New(st, registry, factory, health, log).WithRateLimit(api.RateLimitConfig{
+		RPS:            cfg.RateLimitRPS,
+		Burst:          cfg.RateLimitBurst,
+		TrustForwarded: cfg.RateLimitTrustForwarded,
+	})
 	webSrv, err := web.New(st, registry, factory, log)
 	if err != nil {
 		return err

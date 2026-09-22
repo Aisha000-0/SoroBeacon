@@ -28,12 +28,18 @@ type emptyStore struct {
 	store.Store
 }
 
-func (emptyStore) GetStats(context.Context) (store.Stats, error)                     { return store.Stats{}, nil }
+func (emptyStore) GetStats(context.Context) (store.Stats, error) { return store.Stats{}, nil }
 func (emptyStore) ListAlerts(context.Context, store.AlertFilter) ([]store.Alert, error) {
 	return nil, nil
 }
 func (emptyStore) ListMonitors(context.Context, bool) ([]store.Monitor, error) { return nil, nil }
 func (emptyStore) ListChannels(context.Context, bool) ([]store.Channel, error) { return nil, nil }
+func (emptyStore) ListMonitorsPage(context.Context, store.ListFilter) ([]store.Monitor, error) {
+	return nil, nil
+}
+func (emptyStore) ListChannelsPage(context.Context, store.ListFilter) ([]store.Channel, error) {
+	return nil, nil
+}
 
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
@@ -42,6 +48,41 @@ func newTestServer(t *testing.T) *Server {
 		t.Fatalf("New: %v", err)
 	}
 	return s
+}
+
+type pagingStore struct {
+	emptyStore
+	n int
+}
+
+func (p pagingStore) ListMonitorsPage(context.Context, store.ListFilter) ([]store.Monitor, error) {
+	out := make([]store.Monitor, p.n)
+	for i := range out {
+		out[i] = store.Monitor{ID: int64(i + 1), Name: "m"}
+	}
+	return out, nil
+}
+
+func TestMonitorsPageShowsOlderLinkOnFullPage(t *testing.T) {
+	s, err := New(pagingStore{n: 50}, rules.NewRegistry(), notify.DefaultFactory(), slog.New(slog.NewTextHandler(os.Stdout, nil)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	srv := httptest.NewServer(s.Routes())
+	defer srv.Close()
+	res, err := http.Get(srv.URL + "/monitors")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	if !strings.Contains(html, `/monitors?cursor=50`) {
+		t.Fatalf("expected Older paging link for a full page, got:\n%s", html)
+	}
 }
 
 func TestNavHighlightsActivePage(t *testing.T) {
