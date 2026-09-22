@@ -21,10 +21,16 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sorotrail/sorobeacon/internal/notify"
+	"github.com/sorotrail/sorobeacon/internal/poller"
 	"github.com/sorotrail/sorobeacon/internal/rules"
 	"github.com/sorotrail/sorobeacon/internal/stellar"
 	"github.com/sorotrail/sorobeacon/internal/store"
 )
+
+// PositionReader is the poller's race-free snapshot of ingest progress.
+type PositionReader interface {
+	Position() poller.Position
+}
 
 //go:embed templates/*.html
 var templatesFS embed.FS
@@ -39,6 +45,7 @@ type Server struct {
 	factory  *notify.Factory
 	log      *slog.Logger
 	pages    map[string]*template.Template
+	poller   PositionReader
 }
 
 // templateFuncs are available to every page template.
@@ -71,6 +78,12 @@ func New(st store.Store, reg *rules.Registry, f *notify.Factory, log *slog.Logge
 		s.pages[page] = t
 	}
 	return s, nil
+}
+
+// WithPoller attaches the ingest-position source shown on the overview page.
+func (s *Server) WithPoller(p PositionReader) *Server {
+	s.poller = p
+	return s
 }
 
 // Routes returns the dashboard router, mounted at / by cmd/sorobeacon.
@@ -160,9 +173,15 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	s.render(w, "index", map[string]any{
+	data := map[string]any{
 		"Title": "Overview", "Stats": stats, "Alerts": alerts, "MonitorNames": names,
-	})
+	}
+	if s.poller != nil {
+		if pos := s.poller.Position(); pos.Ready() {
+			data["Poller"] = pos
+		}
+	}
+	s.render(w, "index", data)
 }
 
 func (s *Server) monitors(w http.ResponseWriter, r *http.Request) {

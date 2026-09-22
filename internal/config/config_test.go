@@ -18,6 +18,7 @@ func TestLoadDefaults(t *testing.T) {
 	assert.Equal(t, DefaultPollInterval, cfg.PollInterval)
 	assert.Equal(t, DefaultHTTPAddr, cfg.HTTPAddr)
 	assert.Equal(t, slog.LevelInfo, cfg.LogLevel)
+	assert.Equal(t, uint32(0), cfg.ReadyzLagThreshold)
 	assert.Equal(t, 0.0, cfg.RateLimitRPS)
 	assert.Equal(t, 0, cfg.RateLimitBurst)
 	assert.False(t, cfg.RateLimitTrustForwarded)
@@ -42,6 +43,23 @@ func TestLoadOverrides(t *testing.T) {
 	assert.Equal(t, 30*time.Second, cfg.PollInterval)
 	assert.Equal(t, ":9999", cfg.HTTPAddr)
 	assert.Equal(t, slog.LevelDebug, cfg.LogLevel)
+}
+
+func TestLoadReadyzLagThreshold(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://x")
+	t.Setenv("READYZ_LAG_THRESHOLD", "50")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, uint32(50), cfg.ReadyzLagThreshold)
+}
+
+func TestLoadRejectsInvalidReadyzLagThreshold(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://x")
+	t.Setenv("READYZ_LAG_THRESHOLD", "nope")
+
+	_, err := Load()
+	assert.ErrorContains(t, err, "READYZ_LAG_THRESHOLD")
 }
 
 func TestLoadAcceptsHTTPAndHTTPSRPCURLs(t *testing.T) {

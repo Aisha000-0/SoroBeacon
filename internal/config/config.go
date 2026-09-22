@@ -48,6 +48,9 @@ type Config struct {
 	HTTPAddr string
 	// LogLevel is the minimum slog level (debug, info, warn, error).
 	LogLevel slog.Level
+	// ReadyzLagThreshold is the ledger lag at which /readyz fails.
+	// Zero (the default) disables the check so existing probes stay green.
+	ReadyzLagThreshold uint32
 	// RateLimitRPS is the per-client API token-bucket refill rate.
 	// Zero (default) disables the limiter.
 	RateLimitRPS float64
@@ -129,6 +132,12 @@ func Load() (Config, error) {
 		cfg.LogLevel = lvl
 	}
 
+	if v := os.Getenv("READYZ_LAG_THRESHOLD"); v != "" {
+		n, err := strconv.ParseUint(v, 10, 32)
+		if err != nil {
+			return cfg, fmt.Errorf("invalid READYZ_LAG_THRESHOLD %q: %w", v, err)
+		}
+		cfg.ReadyzLagThreshold = uint32(n)
 	if v := os.Getenv("RATE_LIMIT_RPS"); v != "" {
 		rps, err := strconv.ParseFloat(v, 64)
 		if err != nil || rps < 0 || math.IsNaN(rps) || math.IsInf(rps, 0) {

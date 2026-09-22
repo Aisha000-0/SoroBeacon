@@ -10,11 +10,17 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sorotrail/sorobeacon/internal/notify"
+	"github.com/sorotrail/sorobeacon/internal/poller"
 	"github.com/sorotrail/sorobeacon/internal/rules"
 	"github.com/sorotrail/sorobeacon/internal/store"
 )
+
+type stubPosition struct{ pos poller.Position }
+
+func (s stubPosition) Position() poller.Position { return s.pos }
 
 // emptyStore answers every page-rendering call with an empty result, so
 // index/monitors/channels/alerts render without a real database.
@@ -126,6 +132,53 @@ func TestNavHighlightsActivePage(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestOverviewShowsPollerLagWhenReady(t *testing.T) {
+	s := newTestServer(t).WithPoller(stubPosition{pos: poller.Position{
+		LastProcessedLedger: 100,
+		LatestChainLedger:   125,
+		LastSuccessfulPoll:  time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC),
+	}})
+	srv := httptest.NewServer(s.Routes())
+	defer srv.Close()
+
+	res, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	for _, want := range []string{"ledger lag", "125", "100", "Last successful poll"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("overview missing %q in %s", want, html)
+		}
+	}
+	if strings.Contains(html, "waiting for the first successful poll") {
+		t.Fatal("ready poller should not show the waiting copy")
+	}
+}
+
+func TestOverviewWaitingCopyBeforeFirstPoll(t *testing.T) {
+	srv := httptest.NewServer(newTestServer(t).Routes())
+	defer srv.Close()
+
+	res, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "waiting for the first successful poll") {
+		t.Fatalf("overview should wait for first poll, got %s", body)
 	}
 }
 
