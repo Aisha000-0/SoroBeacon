@@ -52,7 +52,8 @@ type Server struct {
 
 // templateFuncs are available to every page template.
 var templateFuncs = template.FuncMap{
-	"prettyJSON": prettyJSON,
+	"prettyJSON":   prettyJSON,
+	"decodedEvent": decodedEvent,
 }
 
 // prettyJSON indents raw JSON for display. Invalid or empty input falls
