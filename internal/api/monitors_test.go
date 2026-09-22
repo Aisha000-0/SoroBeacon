@@ -90,13 +90,14 @@ func TestListMonitors_NextCursorOmittedOnEmptyPage(t *testing.T) {
 
 func TestListMonitors_EnabledParamWiring(t *testing.T) {
 	tests := []struct {
-		query string
-		want  bool
+		query    string
+		wantOnly bool
+		wantTri  *bool
 	}{
-		{"", false},
-		{"?enabled=true", true},
-		{"?enabled=false", false},
-		{"?enabled=garbage", false},
+		{"", false, nil},
+		{"?enabled=true", true, boolPtr(true)},
+		{"?enabled=false", false, boolPtr(false)},
+		{"?enabled=garbage", false, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.query, func(t *testing.T) {
@@ -108,10 +109,40 @@ func TestListMonitors_EnabledParamWiring(t *testing.T) {
 			if ps.gotEnabledOnly == nil {
 				t.Fatal("ListMonitorsPage was not called")
 			}
-			if *ps.gotEnabledOnly != tt.want {
-				t.Fatalf("enabledOnly = %v, want %v", *ps.gotEnabledOnly, tt.want)
+			if *ps.gotEnabledOnly != tt.wantOnly {
+				t.Fatalf("enabledOnly = %v, want %v", *ps.gotEnabledOnly, tt.wantOnly)
+			}
+			if tt.wantTri == nil {
+				if ps.gotFilter.Enabled != nil {
+					t.Fatalf("Enabled = %v, want nil (all)", *ps.gotFilter.Enabled)
+				}
+			} else if ps.gotFilter.Enabled == nil || *ps.gotFilter.Enabled != *tt.wantTri {
+				t.Fatalf("Enabled = %v, want %v", ps.gotFilter.Enabled, *tt.wantTri)
 			}
 		})
+	}
+}
+
+func boolPtr(v bool) *bool { return &v }
+
+func TestListMonitors_QueryAndSortPassedThrough(t *testing.T) {
+	ps := &pageStore{n: 1}
+	code, _ := getJSON(t, ps, "/monitors?q=treasury&sort=name&enabled=true")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if ps.gotFilter.Query != "treasury" || ps.gotFilter.Sort != "name" {
+		t.Fatalf("filter = %+v, want q=treasury sort=name", ps.gotFilter)
+	}
+	if ps.gotFilter.Enabled == nil || !*ps.gotFilter.Enabled {
+		t.Fatalf("Enabled = %v, want true", ps.gotFilter.Enabled)
+	}
+}
+
+func TestListMonitors_InvalidSort(t *testing.T) {
+	code, body := getJSON(t, &pageStore{n: 1}, "/monitors?sort=drop+table")
+	if code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%v, want 400", code, body)
 	}
 }
 

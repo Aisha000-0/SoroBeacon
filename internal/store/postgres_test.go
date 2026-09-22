@@ -136,7 +136,7 @@ func TestMonitorsAndChannelsKeysetPagination(t *testing.T) {
 	}
 
 	monIDs := collectIDs(func(after int64) []int64 {
-		list, err := st.ListMonitorsPage(ctx, ListFilter{Limit: 3, AfterID: after})
+		list, err := st.ListMonitorsPage(ctx, ListFilter{Limit: 3, AfterID: after, Sort: "id"})
 		require.NoError(t, err)
 		ids := make([]int64, len(list))
 		for i, m := range list {
@@ -160,12 +160,69 @@ func TestMonitorsAndChannelsKeysetPagination(t *testing.T) {
 	})
 	require.Len(t, chIDs, 7, "every channel must appear exactly once")
 
-	enabled, err := st.ListMonitorsPage(ctx, ListFilter{EnabledOnly: true, Limit: 50})
+	enabled, err := st.ListMonitorsPage(ctx, ListFilter{EnabledOnly: true, Limit: 50, Sort: "id"})
 	require.NoError(t, err)
 	require.Len(t, enabled, 4)
 	for _, m := range enabled {
 		assert.True(t, m.Enabled)
 	}
+}
+
+func TestListMonitorsPageSearchFilterSort(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	names := []struct {
+		name    string
+		enabled bool
+	}{
+		{"Alpha treasury", true},
+		{"beta vault", false},
+		{"Gamma treasury", true},
+		{"other", true},
+	}
+	for _, n := range names {
+		m := &Monitor{Name: n.name, ContractIDs: []string{"C"}, Enabled: n.enabled}
+		require.NoError(t, st.CreateMonitor(ctx, m))
+	}
+
+	on := true
+	off := false
+
+	list, err := st.ListMonitorsPage(ctx, ListFilter{Query: "TREASURY", Limit: 50})
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+	assert.Equal(t, "Alpha treasury", list[0].Name)
+	assert.Equal(t, "Gamma treasury", list[1].Name)
+
+	list, err = st.ListMonitorsPage(ctx, ListFilter{Query: "treasury", Enabled: &on, Limit: 50})
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+
+	list, err = st.ListMonitorsPage(ctx, ListFilter{Enabled: &off, Limit: 50})
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.Equal(t, "beta vault", list[0].Name)
+
+	list, err = st.ListMonitorsPage(ctx, ListFilter{Query: "100%", Limit: 50})
+	require.NoError(t, err)
+	assert.Empty(t, list, "LIKE metacharacters must not become wildcards")
+
+	list, err = st.ListMonitorsPage(ctx, ListFilter{Sort: "name", Limit: 50})
+	require.NoError(t, err)
+	require.Len(t, list, 4)
+	assert.Equal(t, "Alpha treasury", list[0].Name)
+	assert.Equal(t, "beta vault", list[1].Name, "name sort is case-insensitive")
+	assert.Equal(t, "Gamma treasury", list[2].Name)
+	assert.Equal(t, "other", list[3].Name)
+
+	// Name-sort keyset: after Alpha, the next page starts at beta.
+	page1, err := st.ListMonitorsPage(ctx, ListFilter{Sort: "name", Limit: 1})
+	require.NoError(t, err)
+	require.Len(t, page1, 1)
+	page2, err := st.ListMonitorsPage(ctx, ListFilter{Sort: "name", Limit: 1, AfterID: page1[0].ID})
+	require.NoError(t, err)
+	require.Len(t, page2, 1)
+	assert.Equal(t, "beta vault", page2[0].Name)
 }
 
 func TestRuleCRUDAndCascade(t *testing.T) {
@@ -265,6 +322,97 @@ func TestAlertDedupAndListing(t *testing.T) {
 	assert.Empty(t, list)
 }
 
+func TestListAlertsSearchFilterSort(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	m1 := &Monitor{Name: "m1", ContractIDs: []string{"CAAA"}, Enabled: true}
+	require.NoError(t, st.CreateMonitor(ctx, m1))
+	m2 := &Monitor{Name: "m2", ContractIDs: []string{"CBBB"}, Enabled: true}
+	require.NoError(t, st.CreateMonitor(ctx, m2))
+	r1 := &Rule{MonitorID: m1.ID, Type: "event_emitted", Params: json.RawMessage(`{}`), Enabled: true}
+	require.NoError(t, st.CreateRule(ctx, r1))
+	r2 := &Rule{MonitorID: m2.ID, Type: "event_emitted", Params: json.RawMessage(`{}`), Enabled: true}
+	require.NoError(t, st.CreateRule(ctx, r2))
+
+	payloads := []struct {
+		monitor *Monitor
+		rule    *Rule
+		event   string
+		payload string
+	}{
+		{m1, r1, "ev-a1", `{"contract_id":"CAAA"}`},
+		{m1, r1, "ev-a2", `{"contract_id":"CAAA"}`},
+		{m1, r1, "ev-a3", `{"contract_id":"CZZZ"}`},
+		{m2, r2, "ev-b1", `{"contract_id":"CBBB"}`},
+		{m2, r2, "ev-b2", `{"contract_id":"CBBB"}`},
+		{m2, r2, "ev-b3", `{"contract_id":"CBBB"}`},
+		{m2, r2, "ev-b4", `{"contract_id":"CBBB"}`},
+	}
+	var created []Alert
+	for _, p := range payloads {
+		a := &Alert{
+			MonitorID: p.monitor.ID, RuleID: p.rule.ID, EventID: p.event,
+			Payload: json.RawMessage(p.payload),
+		}
+		ok, err := st.CreateAlert(ctx, a)
+		require.NoError(t, err)
+		require.True(t, ok)
+		created = append(created, *a)
+	}
+
+	byRule, err := st.ListAlerts(ctx, AlertFilter{RuleID: r1.ID, Limit: 50})
+	require.NoError(t, err)
+	require.Len(t, byRule, 3)
+	for _, a := range byRule {
+		assert.Equal(t, r1.ID, a.RuleID)
+	}
+
+	byContract, err := st.ListAlerts(ctx, AlertFilter{ContractID: "CAAA", Limit: 50})
+	require.NoError(t, err)
+	require.Len(t, byContract, 2)
+
+	composed, err := st.ListAlerts(ctx, AlertFilter{MonitorID: m1.ID, RuleID: r1.ID, ContractID: "CAAA", Limit: 50})
+	require.NoError(t, err)
+	require.Len(t, composed, 2)
+
+	// Paging in both directions must cover every id once: no duplicates, no gaps.
+	pageIDs := func(sort string, limit int) []int64 {
+		t.Helper()
+		var ids []int64
+		seen := map[int64]bool{}
+		var after int64
+		for i := 0; i < 10; i++ {
+			page, err := st.ListAlerts(ctx, AlertFilter{Sort: sort, Limit: limit, AfterID: after})
+			require.NoError(t, err)
+			if len(page) == 0 {
+				break
+			}
+			for _, a := range page {
+				if seen[a.ID] {
+					t.Fatalf("duplicate id %d under sort %s", a.ID, sort)
+				}
+				seen[a.ID] = true
+				ids = append(ids, a.ID)
+			}
+			if len(page) < limit {
+				break
+			}
+			after = page[len(page)-1].ID
+		}
+		return ids
+	}
+
+	desc := pageIDs("created_at_desc", 3)
+	asc := pageIDs("created_at_asc", 3)
+	require.Len(t, desc, len(created))
+	require.Len(t, asc, len(created))
+	assert.Equal(t, created[len(created)-1].ID, desc[0], "desc starts at newest")
+	assert.Equal(t, created[0].ID, asc[0], "asc starts at oldest")
+	assert.Equal(t, desc[0], asc[len(asc)-1])
+	assert.Equal(t, desc[len(desc)-1], asc[0])
+}
+
 func TestDeliveryAttempts(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
@@ -327,4 +475,68 @@ func TestGetStats(t *testing.T) {
 	assert.Equal(t, int64(1), stats.Rules)
 	assert.Equal(t, int64(1), stats.Alerts)
 	assert.Equal(t, int64(1), stats.AlertsLast24)
+}
+
+func TestCopyMonitorName(t *testing.T) {
+	assert.Equal(t, "m (copy)", CopyMonitorName("m", nil))
+	assert.Equal(t, "m (copy)", CopyMonitorName("m", []string{"m"}))
+	assert.Equal(t, "m (copy 2)", CopyMonitorName("m", []string{"m", "m (copy)"}))
+	assert.Equal(t, "m (copy 3)", CopyMonitorName("m", []string{"m", "m (copy)", "m (copy 2)"}))
+}
+
+func TestDuplicateMonitor_CopiesRulesChannelsDisabledUniqueName(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	src := &Monitor{Name: "alpha", ContractIDs: []string{"CAAA", "CBBB"}, Enabled: true}
+	require.NoError(t, st.CreateMonitor(ctx, src))
+	r1 := &Rule{MonitorID: src.ID, Type: "event_emitted", Params: json.RawMessage(`{"event_name":"transfer"}`), Enabled: true}
+	r2 := &Rule{MonitorID: src.ID, Type: "value_threshold", Params: json.RawMessage(`{"min":"1"}`), Enabled: false}
+	require.NoError(t, st.CreateRule(ctx, r1))
+	require.NoError(t, st.CreateRule(ctx, r2))
+	c1 := &Channel{Name: "ops", Type: "webhook", Config: json.RawMessage(`{"url":"u"}`), Enabled: true}
+	c2 := &Channel{Name: "pager", Type: "slack", Config: json.RawMessage(`{"webhook_url":"u"}`), Enabled: true}
+	require.NoError(t, st.CreateChannel(ctx, c1))
+	require.NoError(t, st.CreateChannel(ctx, c2))
+	require.NoError(t, st.SetMonitorChannels(ctx, src.ID, []int64{c1.ID, c2.ID}))
+	_, err := st.CreateAlert(ctx, &Alert{MonitorID: src.ID, RuleID: r1.ID, EventID: "ev-src"})
+	require.NoError(t, err)
+
+	copy, err := st.DuplicateMonitor(ctx, src.ID)
+	require.NoError(t, err)
+	assert.NotEqual(t, src.ID, copy.ID)
+	assert.Equal(t, "alpha (copy)", copy.Name)
+	assert.False(t, copy.Enabled, "copy must be created disabled so it cannot alert before review")
+	assert.Equal(t, []string{"CAAA", "CBBB"}, copy.ContractIDs)
+	assert.Equal(t, []int64{c1.ID, c2.ID}, copy.ChannelIDs)
+
+	got, err := st.GetMonitor(ctx, copy.ID)
+	require.NoError(t, err)
+	assert.False(t, got.Enabled)
+	assert.Equal(t, []int64{c1.ID, c2.ID}, got.ChannelIDs)
+
+	rules, err := st.ListRules(ctx, copy.ID, false)
+	require.NoError(t, err)
+	require.Len(t, rules, 2)
+	assert.Equal(t, "event_emitted", rules[0].Type)
+	assert.JSONEq(t, `{"event_name":"transfer"}`, string(rules[0].Params))
+	assert.True(t, rules[0].Enabled)
+	assert.Equal(t, "value_threshold", rules[1].Type)
+	assert.JSONEq(t, `{"min":"1"}`, string(rules[1].Params))
+	assert.False(t, rules[1].Enabled)
+
+	srcAlerts, err := st.ListAlerts(ctx, AlertFilter{MonitorID: src.ID})
+	require.NoError(t, err)
+	require.Len(t, srcAlerts, 1)
+	copyAlerts, err := st.ListAlerts(ctx, AlertFilter{MonitorID: copy.ID})
+	require.NoError(t, err)
+	assert.Empty(t, copyAlerts, "alerts must not be copied")
+
+	second, err := st.DuplicateMonitor(ctx, src.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "alpha (copy 2)", second.Name)
+	assert.False(t, second.Enabled)
+
+	_, err = st.DuplicateMonitor(ctx, 999999)
+	assert.ErrorIs(t, err, ErrNotFound)
 }

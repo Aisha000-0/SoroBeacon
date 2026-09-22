@@ -15,10 +15,12 @@ import (
 // directly without a real database.
 type alertsStore struct {
 	store.Store
-	n int
+	n   int
+	got store.AlertFilter
 }
 
 func (a *alertsStore) ListAlerts(ctx context.Context, f store.AlertFilter) ([]store.Alert, error) {
+	a.got = f
 	alerts := make([]store.Alert, a.n)
 	for i := range alerts {
 		alerts[i] = store.Alert{ID: int64(i + 1)}
@@ -78,5 +80,31 @@ func TestListAlerts_NextCursorOmittedOnEmptyPage(t *testing.T) {
 	body := getAlerts(t, 0, "")
 	if got := body["next_cursor"]; got != "" {
 		t.Fatalf("next_cursor on an empty page = %q, want empty", got)
+	}
+}
+
+func TestListAlerts_SortAndFiltersPassedThrough(t *testing.T) {
+	st := &alertsStore{n: 1}
+	code, _ := getJSON(t, st, "/alerts?rule_id=9&contract_id=CAAA&sort=created_at_asc&monitor_id=3&limit=10&cursor=42")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if st.got.RuleID != 9 || st.got.ContractID != "CAAA" || st.got.Sort != "created_at_asc" ||
+		st.got.MonitorID != 3 || st.got.Limit != 10 || st.got.AfterID != 42 {
+		t.Fatalf("filter = %+v", st.got)
+	}
+}
+
+func TestListAlerts_InvalidSort(t *testing.T) {
+	code, body := getJSON(t, &alertsStore{n: 1}, "/alerts?sort=id")
+	if code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%v, want 400", code, body)
+	}
+}
+
+func TestListAlerts_InvalidRuleID(t *testing.T) {
+	code, body := getJSON(t, &alertsStore{n: 1}, "/alerts?rule_id=abc")
+	if code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%v, want 400", code, body)
 	}
 }

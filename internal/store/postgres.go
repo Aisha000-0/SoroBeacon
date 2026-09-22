@@ -108,13 +108,39 @@ func (p *Postgres) ListMonitorsPage(ctx context.Context, f ListFilter) ([]Monito
 		args = append(args, v)
 		return fmt.Sprintf("$%d", n)
 	}
-	if f.EnabledOnly {
+	if f.Query != "" {
+		// strpos + lower is a parameterized substring match without LIKE
+		// metacharacters, so a search for "100%" cannot become a wildcard.
+		q += ` AND strpos(lower(name), lower(` + arg(f.Query) + `)) > 0`
+	}
+	switch {
+	case f.Enabled != nil && *f.Enabled:
+		q += ` AND enabled`
+	case f.Enabled != nil && !*f.Enabled:
+		q += ` AND NOT enabled`
+	case f.EnabledOnly:
 		q += ` AND enabled`
 	}
+	sort := monitorSort(f.Sort)
 	if f.AfterID != 0 {
-		q += ` AND id < ` + arg(f.AfterID)
+		switch sort {
+		case "name":
+			q += ` AND (lower(name), id) > (SELECT lower(name), id FROM monitors WHERE id = ` + arg(f.AfterID) + `)`
+		case "created_at":
+			q += ` AND (created_at, id) < (SELECT created_at, id FROM monitors WHERE id = ` + arg(f.AfterID) + `)`
+		default:
+			q += ` AND id < ` + arg(f.AfterID)
+		}
 	}
-	q += ` ORDER BY id DESC LIMIT ` + arg(pageLimit(f.Limit))
+	switch sort {
+	case "name":
+		q += ` ORDER BY lower(name) ASC, id ASC`
+	case "created_at":
+		q += ` ORDER BY created_at DESC, id DESC`
+	default:
+		q += ` ORDER BY id DESC`
+	}
+	q += ` LIMIT ` + arg(pageLimit(f.Limit))
 	rows, err := p.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -129,6 +155,17 @@ func (p *Postgres) ListMonitorsPage(ctx context.Context, f ListFilter) ([]Monito
 		out = append(out, *m)
 	}
 	return out, rows.Err()
+}
+
+// monitorSort maps ListFilter.Sort onto the allowlist. Unknown / empty
+// values become "name" so a typo cannot change the ORDER BY shape.
+func monitorSort(s string) string {
+	switch s {
+	case "id", "created_at", "name":
+		return s
+	default:
+		return "name"
+	}
 }
 
 func (p *Postgres) UpdateMonitor(ctx context.Context, m *Monitor) error {
@@ -197,6 +234,86 @@ func (p *Postgres) SetMonitorsEnabled(ctx context.Context, ids []int64, enabled 
 
 func (p *Postgres) DeleteMonitor(ctx context.Context, id int64) error {
 	return p.deleteByID(ctx, "monitors", id)
+}
+
+func (p *Postgres) DuplicateMonitor(ctx context.Context, id int64) (*Monitor, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // rollback after commit is a no-op
+
+	src, err := scanMonitor(tx.QueryRow(ctx,
+		`SELECT id, name, contract_ids, enabled, created_at FROM monitors WHERE id = $1`, id))
+	if err != nil {
+		return nil, err
+	}
+	chRows, err := tx.Query(ctx,
+		`SELECT channel_id FROM monitor_channels WHERE monitor_id = $1 ORDER BY channel_id`, id)
+	if err != nil {
+		return nil, err
+	}
+	src.ChannelIDs, err = pgx.CollectRows(chRows, pgx.RowTo[int64])
+	if err != nil {
+		return nil, err
+	}
+	ruleRows, err := tx.Query(ctx,
+		`SELECT type, params, enabled FROM rules WHERE monitor_id = $1 ORDER BY id`, id)
+	if err != nil {
+		return nil, err
+	}
+	rules, err := pgx.CollectRows(ruleRows, func(row pgx.CollectableRow) (Rule, error) {
+		var r Rule
+		err := row.Scan(&r.Type, &r.Params, &r.Enabled)
+		return r, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	nameRows, err := tx.Query(ctx, `SELECT name FROM monitors`)
+	if err != nil {
+		return nil, err
+	}
+	names, err := pgx.CollectRows(nameRows, pgx.RowTo[string])
+	if err != nil {
+		return nil, err
+	}
+
+	ids, err := json.Marshal(src.ContractIDs)
+	if err != nil {
+		return nil, err
+	}
+	copy := Monitor{
+		Name:        CopyMonitorName(src.Name, names),
+		ContractIDs: src.ContractIDs,
+		Enabled:     false, // never inherit enabled: a duplicate must be reviewed first
+	}
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO monitors (name, contract_ids, enabled) VALUES ($1, $2, $3)
+		 RETURNING id, created_at`,
+		copy.Name, ids, copy.Enabled,
+	).Scan(&copy.ID, &copy.CreatedAt); err != nil {
+		return nil, err
+	}
+	for _, r := range rules {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO rules (monitor_id, type, params, enabled) VALUES ($1, $2, $3, $4)`,
+			copy.ID, r.Type, jsonOrEmpty(r.Params), r.Enabled); err != nil {
+			return nil, err
+		}
+	}
+	for _, cid := range src.ChannelIDs {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO monitor_channels (monitor_id, channel_id) VALUES ($1, $2)`,
+			copy.ID, cid); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	copy.ChannelIDs = src.ChannelIDs
+	return &copy, nil
 }
 
 func (p *Postgres) SetMonitorChannels(ctx context.Context, monitorID int64, channelIDs []int64) error {
@@ -398,6 +515,15 @@ func (p *Postgres) CreateAlert(ctx context.Context, a *Alert) (bool, error) {
 	return true, nil
 }
 
+// alertSort maps AlertFilter.Sort onto the allowlist. Unknown / empty
+// values become created_at_desc so a typo cannot change the ORDER BY shape.
+func alertSort(s string) string {
+	if s == "created_at_asc" {
+		return "created_at_asc"
+	}
+	return "created_at_desc"
+}
+
 func (p *Postgres) ListAlerts(ctx context.Context, f AlertFilter) ([]Alert, error) {
 	q := `SELECT id, monitor_id, rule_id, event_id, payload, created_at FROM alerts WHERE TRUE`
 	args := []any{}
@@ -410,20 +536,37 @@ func (p *Postgres) ListAlerts(ctx context.Context, f AlertFilter) ([]Alert, erro
 	if f.MonitorID != 0 {
 		q += ` AND monitor_id = ` + arg(f.MonitorID)
 	}
+	if f.RuleID != 0 {
+		q += ` AND rule_id = ` + arg(f.RuleID)
+	}
+	if f.ContractID != "" {
+		q += ` AND payload->>'contract_id' = ` + arg(f.ContractID)
+	}
 	if !f.From.IsZero() {
 		q += ` AND created_at >= ` + arg(f.From)
 	}
 	if !f.To.IsZero() {
 		q += ` AND created_at < ` + arg(f.To)
 	}
+	sort := alertSort(f.Sort)
 	if f.AfterID != 0 {
-		q += ` AND id < ` + arg(f.AfterID)
+		// Subquery the cursor row so the comparison uses the same
+		// (created_at, id) pair the ORDER BY does. The inequality
+		// flips with direction; a one-sided id < AfterID would
+		// skip/repeat once two rows share a timestamp.
+		cursor := `(SELECT created_at, id FROM alerts WHERE id = ` + arg(f.AfterID) + `)`
+		if sort == "created_at_asc" {
+			q += ` AND (created_at, id) > ` + cursor
+		} else {
+			q += ` AND (created_at, id) < ` + cursor
+		}
 	}
-	limit := f.Limit
-	if limit <= 0 || limit > 500 {
-		limit = 50
+	if sort == "created_at_asc" {
+		q += ` ORDER BY created_at ASC, id ASC`
+	} else {
+		q += ` ORDER BY created_at DESC, id DESC`
 	}
-	q += ` ORDER BY id DESC LIMIT ` + arg(limit)
+	q += ` LIMIT ` + arg(pageLimit(f.Limit))
 
 	rows, err := p.pool.Query(ctx, q, args...)
 	if err != nil {

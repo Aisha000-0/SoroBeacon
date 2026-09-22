@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -90,6 +91,7 @@ func (s *Server) Routes() chi.Router {
 			r.Get("/", s.getMonitor)
 			r.Patch("/", s.updateMonitor)
 			r.Delete("/", s.deleteMonitor)
+			r.Post("/duplicate", s.duplicateMonitor)
 			r.Post("/rules", s.createRule)
 			r.Get("/rules", s.listRules)
 			r.Patch("/rules/{ruleID}", s.updateRule)
@@ -120,11 +122,29 @@ func (s *Server) Routes() chi.Router {
 // --- helpers ---
 
 // parseListFilter reads the shared listing query params (enabled, limit,
-// cursor) used by GET /monitors and GET /channels so they stay on the
-// same dialect as GET /alerts.
+// cursor, plus monitors-only q/sort) used by GET /monitors and GET
+// /channels so they stay on the same dialect as GET /alerts.
 func parseListFilter(w http.ResponseWriter, r *http.Request) (store.ListFilter, bool) {
 	q := r.URL.Query()
 	f := store.ListFilter{EnabledOnly: q.Get("enabled") == "true"}
+	switch q.Get("enabled") {
+	case "true":
+		t := true
+		f.Enabled = &t
+	case "false":
+		t := false
+		f.Enabled = &t
+	}
+	f.Query = strings.TrimSpace(q.Get("q"))
+	if v := q.Get("sort"); v != "" {
+		switch v {
+		case "name", "id", "created_at":
+			f.Sort = v
+		default:
+			writeErr(w, r, http.StatusBadRequest, "invalid sort")
+			return f, false
+		}
+	}
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 {

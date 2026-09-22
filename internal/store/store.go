@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -80,21 +81,43 @@ type IngestState struct {
 // AlertFilter narrows ListAlerts. Zero values mean "no constraint".
 type AlertFilter struct {
 	MonitorID int64
-	From      time.Time
-	To        time.Time
-	Limit     int
-	// AfterID returns alerts with id < AfterID (newest-first keyset cursor).
+	RuleID    int64
+	// ContractID matches payload->>'contract_id'. Empty means no contract filter.
+	ContractID string
+	From       time.Time
+	To         time.Time
+	Limit      int
+	// AfterID is the keyset cursor (the last id of the previous page). The
+	// comparison flips with Sort: created_at_desc uses (created_at, id) <
+	// the cursor row; created_at_asc uses >. Comparing only on id would
+	// repeat or skip rows once sort is not newest-id.
 	AfterID int64
+	// Sort is an allowlisted order key: "created_at_desc" (default) or
+	// "created_at_asc". Unknown values are treated as the default in the
+	// store; the API rejects them with 400. Never interpolate this into SQL.
+	Sort string
 }
 
 // ListFilter pages monitors or channels. Zero values mean "no constraint"
 // besides the store's default page size. AfterID uses the same newest-first
 // keyset as AlertFilter (id < AfterID) so the API does not grow a second
 // cursor dialect.
+//
+// Query, Sort and Enabled apply to ListMonitorsPage. Channels ignore them
+// (EnabledOnly stays the channels listing's on/off switch so enabled=false
+// there still means "all", matching the pre-tri-state API).
 type ListFilter struct {
 	EnabledOnly bool
-	Limit       int
-	AfterID     int64
+	// Enabled is the monitors tri-state filter: nil = all (default), true =
+	// enabled only, false = disabled only. When nil, EnabledOnly is used.
+	Enabled *bool
+	// Query is a case-insensitive name substring. Empty means no name filter.
+	Query string
+	// Sort is an allowlisted order key: "name" (default), "id", "created_at".
+	// Unknown values are treated as "name"; never interpolate this into SQL.
+	Sort    string
+	Limit   int
+	AfterID int64
 }
 
 // Stats is the aggregate snapshot served by GET /stats.
@@ -124,6 +147,31 @@ type Monitors interface {
 	// Unknown IDs are returned rather than treated as an error so a mixed
 	// list still applies to the known monitors. Duplicate ids are collapsed.
 	SetMonitorsEnabled(ctx context.Context, ids []int64, enabled bool) (updated int, unknown []int64, err error)
+	// DuplicateMonitor copies a monitor with its rules and channel
+	// attachments in one transaction. The copy is always created
+	// disabled so it cannot start alerting before it has been reviewed.
+	// Alerts are not copied.
+	DuplicateMonitor(ctx context.Context, id int64) (*Monitor, error)
+}
+
+// CopyMonitorName returns a unique name for a duplicated monitor.
+// The first copy is "name (copy)"; collisions become "name (copy 2)",
+// then (copy 3), and so on. existing is the set of names already in use.
+func CopyMonitorName(src string, existing []string) string {
+	taken := make(map[string]struct{}, len(existing))
+	for _, n := range existing {
+		taken[n] = struct{}{}
+	}
+	candidate := src + " (copy)"
+	if _, ok := taken[candidate]; !ok {
+		return candidate
+	}
+	for i := 2; ; i++ {
+		candidate = fmt.Sprintf("%s (copy %d)", src, i)
+		if _, ok := taken[candidate]; !ok {
+			return candidate
+		}
+	}
 }
 
 // Rules persists rules.
