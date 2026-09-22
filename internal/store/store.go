@@ -91,10 +91,22 @@ type AlertFilter struct {
 // besides the store's default page size. AfterID uses the same newest-first
 // keyset as AlertFilter (id < AfterID) so the API does not grow a second
 // cursor dialect.
+//
+// Query, Sort and Enabled apply to ListMonitorsPage. Channels ignore them
+// (EnabledOnly stays the channels listing's on/off switch so enabled=false
+// there still means "all", matching the pre-tri-state API).
 type ListFilter struct {
 	EnabledOnly bool
-	Limit       int
-	AfterID     int64
+	// Enabled is the monitors tri-state filter: nil = all (default), true =
+	// enabled only, false = disabled only. When nil, EnabledOnly is used.
+	Enabled *bool
+	// Query is a case-insensitive name substring. Empty means no name filter.
+	Query string
+	// Sort is an allowlisted order key: "name" (default), "id", "created_at".
+	// Unknown values are treated as "name"; never interpolate this into SQL.
+	Sort    string
+	Limit   int
+	AfterID int64
 }
 
 // Stats is the aggregate snapshot served by GET /stats.

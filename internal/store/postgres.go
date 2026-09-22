@@ -108,13 +108,39 @@ func (p *Postgres) ListMonitorsPage(ctx context.Context, f ListFilter) ([]Monito
 		args = append(args, v)
 		return fmt.Sprintf("$%d", n)
 	}
-	if f.EnabledOnly {
+	if f.Query != "" {
+		// strpos + lower is a parameterized substring match without LIKE
+		// metacharacters, so a search for "100%" cannot become a wildcard.
+		q += ` AND strpos(lower(name), lower(` + arg(f.Query) + `)) > 0`
+	}
+	switch {
+	case f.Enabled != nil && *f.Enabled:
+		q += ` AND enabled`
+	case f.Enabled != nil && !*f.Enabled:
+		q += ` AND NOT enabled`
+	case f.EnabledOnly:
 		q += ` AND enabled`
 	}
+	sort := monitorSort(f.Sort)
 	if f.AfterID != 0 {
-		q += ` AND id < ` + arg(f.AfterID)
+		switch sort {
+		case "name":
+			q += ` AND (lower(name), id) > (SELECT lower(name), id FROM monitors WHERE id = ` + arg(f.AfterID) + `)`
+		case "created_at":
+			q += ` AND (created_at, id) < (SELECT created_at, id FROM monitors WHERE id = ` + arg(f.AfterID) + `)`
+		default:
+			q += ` AND id < ` + arg(f.AfterID)
+		}
 	}
-	q += ` ORDER BY id DESC LIMIT ` + arg(pageLimit(f.Limit))
+	switch sort {
+	case "name":
+		q += ` ORDER BY lower(name) ASC, id ASC`
+	case "created_at":
+		q += ` ORDER BY created_at DESC, id DESC`
+	default:
+		q += ` ORDER BY id DESC`
+	}
+	q += ` LIMIT ` + arg(pageLimit(f.Limit))
 	rows, err := p.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -129,6 +155,17 @@ func (p *Postgres) ListMonitorsPage(ctx context.Context, f ListFilter) ([]Monito
 		out = append(out, *m)
 	}
 	return out, rows.Err()
+}
+
+// monitorSort maps ListFilter.Sort onto the allowlist. Unknown / empty
+// values become "name" so a typo cannot change the ORDER BY shape.
+func monitorSort(s string) string {
+	switch s {
+	case "id", "created_at", "name":
+		return s
+	default:
+		return "name"
+	}
 }
 
 func (p *Postgres) UpdateMonitor(ctx context.Context, m *Monitor) error {

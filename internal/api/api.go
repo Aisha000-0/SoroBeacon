@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -44,12 +45,7 @@ type Server struct {
 	log                *slog.Logger
 	poller             PositionReader
 	readyzLagThreshold uint32
-	store     store.Store
-	registry  *rules.Registry
-	factory   *notify.Factory
-	rpc       HealthChecker
-	log       *slog.Logger
-	rateLimit RateLimitConfig
+	rateLimit          RateLimitConfig
 }
 
 // New wires an API server. Rate limiting stays off until WithRateLimit.
@@ -68,6 +64,9 @@ func (s *Server) WithPoller(p PositionReader) *Server {
 // cannot start failing without opting in.
 func (s *Server) WithReadyzLagThreshold(n uint32) *Server {
 	s.readyzLagThreshold = n
+	return s
+}
+
 // WithRateLimit installs the per-client API limiter. Passing RPS <= 0
 // leaves the limiter disabled (the zero-value default).
 func (s *Server) WithRateLimit(cfg RateLimitConfig) *Server {
@@ -121,11 +120,29 @@ func (s *Server) Routes() chi.Router {
 // --- helpers ---
 
 // parseListFilter reads the shared listing query params (enabled, limit,
-// cursor) used by GET /monitors and GET /channels so they stay on the
-// same dialect as GET /alerts.
+// cursor, plus monitors-only q/sort) used by GET /monitors and GET
+// /channels so they stay on the same dialect as GET /alerts.
 func parseListFilter(w http.ResponseWriter, r *http.Request) (store.ListFilter, bool) {
 	q := r.URL.Query()
 	f := store.ListFilter{EnabledOnly: q.Get("enabled") == "true"}
+	switch q.Get("enabled") {
+	case "true":
+		t := true
+		f.Enabled = &t
+	case "false":
+		t := false
+		f.Enabled = &t
+	}
+	f.Query = strings.TrimSpace(q.Get("q"))
+	if v := q.Get("sort"); v != "" {
+		switch v {
+		case "name", "id", "created_at":
+			f.Sort = v
+		default:
+			writeErr(w, r, http.StatusBadRequest, "invalid sort")
+			return f, false
+		}
+	}
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 {

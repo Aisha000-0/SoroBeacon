@@ -41,10 +41,22 @@
         "summary": "List monitors",
         "parameters": [
           {
+            "name": "q",
+            "in": "query",
+            "schema": { "type": "string" },
+            "description": "Case-insensitive substring match against the monitor name"
+          },
+          {
             "name": "enabled",
             "in": "query",
             "schema": { "type": "boolean" },
-            "description": "When true, only enabled monitors are returned"
+            "description": "Tri-state: omitted = all, true = enabled only, false = disabled only"
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["name", "id", "created_at"], "default": "name" },
+            "description": "Allowlisted order: name (default), id (newest first), created_at"
           },
           {
             "name": "limit",

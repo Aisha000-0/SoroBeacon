@@ -1,5 +1,22 @@
 {{define "content"}}
 <h1>Monitors</h1>
+<form class="filters" method="get" action="/monitors">
+  <label for="q">Name</label>
+  <input type="search" id="q" name="q" value="{{.Query}}" placeholder="Search by name">
+  <label for="enabled">Status</label>
+  <select id="enabled" name="enabled">
+    <option value="" {{if eq .Enabled ""}}selected{{end}}>All</option>
+    <option value="true" {{if eq .Enabled "true"}}selected{{end}}>Enabled</option>
+    <option value="false" {{if eq .Enabled "false"}}selected{{end}}>Disabled</option>
+  </select>
+  <label for="sort">Sort</label>
+  <select id="sort" name="sort">
+    <option value="name" {{if eq .Sort "name"}}selected{{end}}>Name</option>
+    <option value="id" {{if eq .Sort "id"}}selected{{end}}>Newest</option>
+    <option value="created_at" {{if eq .Sort "created_at"}}selected{{end}}>Created</option>
+  </select>
+  <button>Filter</button>
+</form>
 {{if .Monitors}}
 <table>
   <tr><th>ID</th><th>Name</th><th>Contracts</th><th>Status</th><th></th></tr>
@@ -17,7 +34,8 @@
   </tr>
   {{end}}
 </table>
-{{if .NextCursor}}<p><a href="/monitors?cursor={{.NextCursor}}">Older →</a></p>{{end}}
+{{if .OlderHref}}<p><a href="{{.OlderHref}}">Older →</a></p>{{end}}
+{{else if or .Query (eq .Enabled "true") (eq .Enabled "false")}}<p class="muted">No monitors match these filters.</p>
 {{else}}<p class="muted">No monitors yet — create one below.</p>{{end}}
 
 <fieldset>

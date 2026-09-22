@@ -85,6 +85,52 @@ func TestMonitorsPageShowsOlderLinkOnFullPage(t *testing.T) {
 	}
 }
 
+func TestMonitorsPageFilterControlsAndPreservedPaging(t *testing.T) {
+	s, err := New(pagingStore{n: 50}, rules.NewRegistry(), notify.DefaultFactory(), slog.New(slog.NewTextHandler(os.Stdout, nil)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	srv := httptest.NewServer(s.Routes())
+	defer srv.Close()
+	res, err := http.Get(srv.URL + "/monitors?q=treasury&enabled=true&sort=id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	if !strings.Contains(html, `name="q"`) || !strings.Contains(html, `value="treasury"`) {
+		t.Fatalf("expected name search control populated from q, got:\n%s", html)
+	}
+	if !strings.Contains(html, `value="true" selected`) && !strings.Contains(html, `value="true" selected>`) {
+		if !strings.Contains(html, `<option value="true" selected`) {
+			t.Fatalf("expected enabled=true selected, got:\n%s", html)
+		}
+	}
+	if !strings.Contains(html, `/monitors?`) || !strings.Contains(html, `cursor=50`) {
+		t.Fatalf("expected Older link to keep cursor, got:\n%s", html)
+	}
+	if !strings.Contains(html, `q=treasury`) || !strings.Contains(html, `enabled=true`) || !strings.Contains(html, `sort=id`) {
+		t.Fatalf("expected Older link to preserve filters, got:\n%s", html)
+	}
+}
+
+func TestMonitorFilterQueryOmitsDefaults(t *testing.T) {
+	if got := monitorFilterQuery("", "", ""); got != "" {
+		t.Fatalf("defaults = %q, want empty so ?cursor= stays stable", got)
+	}
+	if got := monitorFilterQuery("", "", "name"); got != "" {
+		t.Fatalf("default sort = %q, want empty", got)
+	}
+	got := monitorFilterQuery("treasury", "false", "id")
+	if !strings.Contains(got, "q=treasury") || !strings.Contains(got, "enabled=false") || !strings.Contains(got, "sort=id") || !strings.HasSuffix(got, "&") {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestNavHighlightsActivePage(t *testing.T) {
 	srv := httptest.NewServer(newTestServer(t).Routes())
 	defer srv.Close()
