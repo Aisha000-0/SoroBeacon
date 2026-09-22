@@ -337,6 +337,23 @@
             "schema": { "type": "integer", "format": "int64" }
           },
           {
+            "name": "rule_id",
+            "in": "query",
+            "schema": { "type": "integer", "format": "int64" }
+          },
+          {
+            "name": "contract_id",
+            "in": "query",
+            "schema": { "type": "string" },
+            "description": "Exact match on payload.contract_id"
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["created_at_desc", "created_at_asc"], "default": "created_at_desc" },
+            "description": "Keyset order; anything else is 400"
+          },
+          {
             "name": "since",
             "in": "query",
             "schema": { "type": "string", "format": "date-time" },

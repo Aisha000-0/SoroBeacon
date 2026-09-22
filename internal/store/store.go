@@ -80,11 +80,21 @@ type IngestState struct {
 // AlertFilter narrows ListAlerts. Zero values mean "no constraint".
 type AlertFilter struct {
 	MonitorID int64
-	From      time.Time
-	To        time.Time
-	Limit     int
-	// AfterID returns alerts with id < AfterID (newest-first keyset cursor).
+	RuleID    int64
+	// ContractID matches payload->>'contract_id'. Empty means no contract filter.
+	ContractID string
+	From       time.Time
+	To         time.Time
+	Limit      int
+	// AfterID is the keyset cursor (the last id of the previous page). The
+	// comparison flips with Sort: created_at_desc uses (created_at, id) <
+	// the cursor row; created_at_asc uses >. Comparing only on id would
+	// repeat or skip rows once sort is not newest-id.
 	AfterID int64
+	// Sort is an allowlisted order key: "created_at_desc" (default) or
+	// "created_at_asc". Unknown values are treated as the default in the
+	// store; the API rejects them with 400. Never interpolate this into SQL.
+	Sort string
 }
 
 // ListFilter pages monitors or channels. Zero values mean "no constraint"

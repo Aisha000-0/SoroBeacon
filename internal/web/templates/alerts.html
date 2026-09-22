@@ -1,12 +1,23 @@
 {{define "content"}}
 <h1>Alerts</h1>
-<form method="get" action="/alerts">
-  <select name="monitor_id" onchange="this.form.submit()">
+<form class="filters" method="get" action="/alerts">
+  <label for="monitor_id">Monitor</label>
+  <select id="monitor_id" name="monitor_id">
     <option value="">All monitors</option>
     {{range .Monitors}}
     <option value="{{.ID}}" {{if eq .ID $.SelectedMonitor}}selected{{end}}>{{.Name}}</option>
     {{end}}
   </select>
+  <label for="rule_id">Rule</label>
+  <input type="number" id="rule_id" name="rule_id" value="{{if .SelectedRule}}{{.SelectedRule}}{{end}}" min="1" placeholder="id">
+  <label for="contract_id">Contract</label>
+  <input type="search" id="contract_id" name="contract_id" value="{{.ContractID}}" placeholder="contract id">
+  <label for="sort">Sort</label>
+  <select id="sort" name="sort">
+    <option value="created_at_desc" {{if eq .Sort "created_at_desc"}}selected{{end}}>Newest</option>
+    <option value="created_at_asc" {{if eq .Sort "created_at_asc"}}selected{{end}}>Oldest</option>
+  </select>
+  <button>Filter</button>
 </form>
 {{if .Alerts}}
 <table>
@@ -28,6 +39,7 @@
   </tr>
   {{end}}
 </table>
-{{if .NextCursor}}<p><a href="/alerts?cursor={{.NextCursor}}{{if .SelectedMonitor}}&monitor_id={{.SelectedMonitor}}{{end}}">Older →</a></p>{{end}}
+{{if .OlderHref}}<p><a href="{{.OlderHref}}">Older →</a></p>{{end}}
+{{else if or .SelectedMonitor .SelectedRule .ContractID}}<p class="muted">No alerts match these filters.</p>
 {{else}}<p class="muted">No alerts.</p>{{end}}
 {{end}}

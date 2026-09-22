@@ -388,6 +388,15 @@ func (p *Postgres) CreateAlert(ctx context.Context, a *Alert) (bool, error) {
 	return true, nil
 }
 
+// alertSort maps AlertFilter.Sort onto the allowlist. Unknown / empty
+// values become created_at_desc so a typo cannot change the ORDER BY shape.
+func alertSort(s string) string {
+	if s == "created_at_asc" {
+		return "created_at_asc"
+	}
+	return "created_at_desc"
+}
+
 func (p *Postgres) ListAlerts(ctx context.Context, f AlertFilter) ([]Alert, error) {
 	q := `SELECT id, monitor_id, rule_id, event_id, payload, created_at FROM alerts WHERE TRUE`
 	args := []any{}
@@ -400,20 +409,37 @@ func (p *Postgres) ListAlerts(ctx context.Context, f AlertFilter) ([]Alert, erro
 	if f.MonitorID != 0 {
 		q += ` AND monitor_id = ` + arg(f.MonitorID)
 	}
+	if f.RuleID != 0 {
+		q += ` AND rule_id = ` + arg(f.RuleID)
+	}
+	if f.ContractID != "" {
+		q += ` AND payload->>'contract_id' = ` + arg(f.ContractID)
+	}
 	if !f.From.IsZero() {
 		q += ` AND created_at >= ` + arg(f.From)
 	}
 	if !f.To.IsZero() {
 		q += ` AND created_at < ` + arg(f.To)
 	}
+	sort := alertSort(f.Sort)
 	if f.AfterID != 0 {
-		q += ` AND id < ` + arg(f.AfterID)
+		// Subquery the cursor row so the comparison uses the same
+		// (created_at, id) pair the ORDER BY does. The inequality
+		// flips with direction; a one-sided id < AfterID would
+		// skip/repeat once two rows share a timestamp.
+		cursor := `(SELECT created_at, id FROM alerts WHERE id = ` + arg(f.AfterID) + `)`
+		if sort == "created_at_asc" {
+			q += ` AND (created_at, id) > ` + cursor
+		} else {
+			q += ` AND (created_at, id) < ` + cursor
+		}
 	}
-	limit := f.Limit
-	if limit <= 0 || limit > 500 {
-		limit = 50
+	if sort == "created_at_asc" {
+		q += ` ORDER BY created_at ASC, id ASC`
+	} else {
+		q += ` ORDER BY created_at DESC, id DESC`
 	}
-	q += ` ORDER BY id DESC LIMIT ` + arg(limit)
+	q += ` LIMIT ` + arg(pageLimit(f.Limit))
 
 	rows, err := p.pool.Query(ctx, q, args...)
 	if err != nil {

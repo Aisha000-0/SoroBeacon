@@ -525,6 +525,16 @@ func (s *Server) alerts(w http.ResponseWriter, r *http.Request) {
 		selected, _ = strconv.ParseInt(v, 10, 64)
 		f.MonitorID = selected
 	}
+	var selectedRule int64
+	if v := q.Get("rule_id"); v != "" {
+		selectedRule, _ = strconv.ParseInt(v, 10, 64)
+		f.RuleID = selectedRule
+	}
+	f.ContractID = strings.TrimSpace(q.Get("contract_id"))
+	switch q.Get("sort") {
+	case "created_at_asc", "created_at_desc":
+		f.Sort = q.Get("sort")
+	}
 	if v := q.Get("cursor"); v != "" {
 		f.AfterID, _ = strconv.ParseInt(v, 10, 64)
 	}
@@ -546,10 +556,44 @@ func (s *Server) alerts(w http.ResponseWriter, r *http.Request) {
 	if len(alerts) == f.Limit {
 		next = strconv.FormatInt(alerts[len(alerts)-1].ID, 10)
 	}
-	s.render(w, "alerts", map[string]any{
+	sort := f.Sort
+	if sort == "" {
+		sort = "created_at_desc"
+	}
+	data := map[string]any{
 		"Title": "Alerts", "Alerts": alerts, "Monitors": monitors,
-		"MonitorNames": names, "SelectedMonitor": selected, "NextCursor": next,
-	})
+		"MonitorNames": names, "SelectedMonitor": selected,
+		"SelectedRule": selectedRule, "ContractID": f.ContractID, "Sort": sort,
+	}
+	if next != "" {
+		// template.URL so filter query separators are not %26-escaped.
+		data["OlderHref"] = template.URL("/alerts?" + alertFilterQuery(selected, selectedRule, f.ContractID, f.Sort) + "cursor=" + next)
+	}
+	s.render(w, "alerts", data)
+}
+
+// alertFilterQuery is the monitor/rule/contract/sort prefix preserved on
+// the Older paging link. Empty when every control is at its default, so
+// the existing `?cursor=` link stays stable.
+func alertFilterQuery(monitorID, ruleID int64, contractID, sort string) string {
+	v := url.Values{}
+	if monitorID != 0 {
+		v.Set("monitor_id", strconv.FormatInt(monitorID, 10))
+	}
+	if ruleID != 0 {
+		v.Set("rule_id", strconv.FormatInt(ruleID, 10))
+	}
+	if contractID != "" {
+		v.Set("contract_id", contractID)
+	}
+	if sort != "" && sort != "created_at_desc" {
+		v.Set("sort", sort)
+	}
+	enc := v.Encode()
+	if enc == "" {
+		return ""
+	}
+	return enc + "&"
 }
 
 // alertDeliveries serves an htmx fragment of an alert's delivery history
