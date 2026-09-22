@@ -30,6 +30,9 @@ type emptyStore struct {
 }
 
 func (emptyStore) GetStats(context.Context) (store.Stats, error) { return store.Stats{}, nil }
+func (emptyStore) AlertCountsByDay(context.Context, int) ([]store.AlertDayCount, error) {
+	return nil, nil
+}
 func (emptyStore) ListAlerts(context.Context, store.AlertFilter) ([]store.Alert, error) {
 	return nil, nil
 }
@@ -730,6 +733,9 @@ type alertWithPayloadStore struct {
 func (alertWithPayloadStore) ListAlerts(context.Context, store.AlertFilter) ([]store.Alert, error) {
 	return []store.Alert{{ID: 1, Payload: json.RawMessage(`{"amount":"100"}`)}}, nil
 }
+func (alertWithPayloadStore) AlertCountsByDay(context.Context, int) ([]store.AlertDayCount, error) {
+	return []store.AlertDayCount{{Day: "2026-09-22", Count: 1}}, nil
+}
 
 func TestAlertsPageRendersIndentedPayload(t *testing.T) {
 	s, err := New(alertWithPayloadStore{}, rules.NewRegistry(), notify.DefaultFactory(), slog.New(slog.NewTextHandler(os.Stdout, nil)))
@@ -1006,6 +1012,66 @@ func getHTML(t *testing.T, st store.Store, path string) string {
 		t.Fatal(err)
 	}
 	return string(body)
+}
+
+func TestAlertChartSVGEmptyWhenAllZero(t *testing.T) {
+	days := []store.AlertDayCount{{Day: "2026-09-01", Count: 0}, {Day: "2026-09-02", Count: 0}}
+	if got := alertChartSVG(days); got != "" {
+		t.Fatalf("zero series SVG = %q, want empty", got)
+	}
+	if got := alertChartSVG(nil); got != "" {
+		t.Fatalf("nil series SVG = %q, want empty", got)
+	}
+}
+
+func TestAlertChartSVGBars(t *testing.T) {
+	days := []store.AlertDayCount{{Day: "2026-09-01", Count: 1}, {Day: "2026-09-02", Count: 3}}
+	got := string(alertChartSVG(days))
+	for _, want := range []string{"<svg", "UTC", "2026-09-01: 1", "2026-09-02: 3", "role=\"img\""} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("svg missing %q: %s", want, got)
+		}
+	}
+}
+
+type chartStore struct {
+	emptyStore
+	days []store.AlertDayCount
+}
+
+func (c chartStore) AlertCountsByDay(context.Context, int) ([]store.AlertDayCount, error) {
+	return c.days, nil
+}
+func (chartStore) ListMonitors(context.Context, bool) ([]store.Monitor, error) {
+	return []store.Monitor{{ID: 1, Name: "alpha", Enabled: true}}, nil
+}
+func (chartStore) ListChannels(context.Context, bool) ([]store.Channel, error) {
+	return []store.Channel{{ID: 2, Name: "ops", Type: "webhook", Enabled: true}}, nil
+}
+func (chartStore) ListAlerts(context.Context, store.AlertFilter) ([]store.Alert, error) {
+	return []store.Alert{{ID: 1, MonitorID: 1, RuleID: 1, EventID: "e"}}, nil
+}
+
+func TestOverviewRendersAlertChart(t *testing.T) {
+	body := getHTML(t, chartStore{days: []store.AlertDayCount{
+		{Day: "2026-08-24", Count: 0},
+		{Day: "2026-08-25", Count: 2},
+	}}, "/")
+	for _, want := range []string{`class="alert-chart"`, "<svg", "Buckets are UTC", "2026-08-25: 2"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("overview missing %q in %s", want, body)
+		}
+	}
+}
+
+func TestOverviewChartEmptyState(t *testing.T) {
+	body := getHTML(t, emptyStore{}, "/")
+	if !strings.Contains(body, "No alerts in the last 30 days") {
+		t.Fatalf("overview missing empty chart state: %s", body)
+	}
+	if strings.Contains(body, "<svg") {
+		t.Fatalf("overview rendered a broken/flat axis on empty series: %s", body)
+	}
 }
 
 func TestOnboardingEmptyStates(t *testing.T) {

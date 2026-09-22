@@ -8,6 +8,18 @@
   <div class="stat"><b>{{.Stats.LastLedger}}</b> last ledger</div>
 </div>
 <p class="muted">Last poll checkpoint: {{formatTime .Stats.LastPollAt .Timezone}}{{with relTime .Stats.LastPollAt}} <span class="muted">({{.}})</span>{{end}}</p>
+<section class="alert-chart">
+  <h2>Alerts over time</h2>
+  {{if .AlertChart}}
+  {{.AlertChart}}
+  <p class="muted">Daily alert counts for the last 30 days. Buckets are UTC.</p>
+  {{else}}
+  <div class="empty">
+    <h2>No alerts in the last 30 days</h2>
+    <p>The series is empty rather than a flat axis, so a quiet period is not mistaken for a missing chart. Buckets are UTC.</p>
+  </div>
+  {{end}}
+</section>
 {{if .Poller}}
 <div class="stats">
   <div class="stat"><b>{{.Poller.Lag}}</b> ledger lag</div>
