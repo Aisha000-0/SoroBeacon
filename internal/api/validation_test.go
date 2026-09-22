@@ -46,6 +46,10 @@ func (v *validationStore) CreateChannel(_ context.Context, ch *store.Channel) er
 	return nil
 }
 
+func (v *validationStore) SetMonitorsEnabled(_ context.Context, ids []int64, _ bool) (int, []int64, error) {
+	return len(ids), []int64{}, nil
+}
+
 type errorEnvelope struct {
 	Error     string `json:"error"`
 	Code      string `json:"code"`

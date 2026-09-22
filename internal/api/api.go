@@ -44,12 +44,7 @@ type Server struct {
 	log                *slog.Logger
 	poller             PositionReader
 	readyzLagThreshold uint32
-	store     store.Store
-	registry  *rules.Registry
-	factory   *notify.Factory
-	rpc       HealthChecker
-	log       *slog.Logger
-	rateLimit RateLimitConfig
+	rateLimit          RateLimitConfig
 }
 
 // New wires an API server. Rate limiting stays off until WithRateLimit.
@@ -68,6 +63,9 @@ func (s *Server) WithPoller(p PositionReader) *Server {
 // cannot start failing without opting in.
 func (s *Server) WithReadyzLagThreshold(n uint32) *Server {
 	s.readyzLagThreshold = n
+	return s
+}
+
 // WithRateLimit installs the per-client API limiter. Passing RPS <= 0
 // leaves the limiter disabled (the zero-value default).
 func (s *Server) WithRateLimit(cfg RateLimitConfig) *Server {
@@ -87,6 +85,7 @@ func (s *Server) Routes() chi.Router {
 	r.Route("/monitors", func(r chi.Router) {
 		r.Post("/", s.createMonitor)
 		r.Get("/", s.listMonitors)
+		r.Post("/bulk", s.bulkMonitors)
 		r.Route("/{id}", func(r chi.Router) {
 			r.Get("/", s.getMonitor)
 			r.Patch("/", s.updateMonitor)

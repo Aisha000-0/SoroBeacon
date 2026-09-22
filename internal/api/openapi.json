@@ -70,6 +70,31 @@
         }
       }
     },
+    "/monitors/bulk": {
+      "post": {
+        "summary": "Bulk enable or disable monitors",
+        "description": "Sets enabled on an explicit list of monitor IDs in one statement. Unknown IDs are returned and do not prevent the known ones from applying. There is no all-monitors shorthand.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/BulkMonitorInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Applied",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/BulkMonitorResult" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
     "/monitors/{id}": {
       "parameters": [
         { "$ref": "#/components/parameters/ID" }
@@ -537,6 +562,31 @@
             "type": "array",
             "items": { "type": "integer", "format": "int64" }
           }
+        }
+      },
+      "BulkMonitorInput": {
+        "type": "object",
+        "required": ["ids", "enabled"],
+        "properties": {
+          "ids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": { "type": "integer", "format": "int64" }
+          },
+          "enabled": { "type": "boolean" }
+        }
+      },
+      "BulkMonitorResult": {
+        "type": "object",
+        "required": ["updated", "unknown_ids", "enabled"],
+        "properties": {
+          "updated": { "type": "integer", "description": "How many existing monitors changed state" },
+          "unknown_ids": {
+            "type": "array",
+            "items": { "type": "integer", "format": "int64" }
+          },
+          "enabled": { "type": "boolean" }
         }
       },
       "Rule": {

@@ -85,6 +85,36 @@ func TestMonitorsPageShowsOlderLinkOnFullPage(t *testing.T) {
 	}
 }
 
+func TestMonitorsPageShowsBulkActionBar(t *testing.T) {
+	s, err := New(pagingStore{n: 2}, rules.NewRegistry(), notify.DefaultFactory(), slog.New(slog.NewTextHandler(os.Stdout, nil)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	srv := httptest.NewServer(s.Routes())
+	defer srv.Close()
+	res, err := http.Get(srv.URL + "/monitors")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	for _, want := range []string{
+		`action="/monitors/bulk"`,
+		`name="ids"`,
+		`Enable selected`,
+		`Disable selected`,
+		`form="bulk-monitors"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("monitors page missing %q in %s", want, html)
+		}
+	}
+}
+
 func TestNavHighlightsActivePage(t *testing.T) {
 	srv := httptest.NewServer(newTestServer(t).Routes())
 	defer srv.Close()

@@ -120,6 +120,10 @@ type Monitors interface {
 	UpdateMonitor(ctx context.Context, m *Monitor) error
 	DeleteMonitor(ctx context.Context, id int64) error
 	SetMonitorChannels(ctx context.Context, monitorID int64, channelIDs []int64) error
+	// SetMonitorsEnabled sets enabled on every existing id in one statement.
+	// Unknown IDs are returned rather than treated as an error so a mixed
+	// list still applies to the known monitors. Duplicate ids are collapsed.
+	SetMonitorsEnabled(ctx context.Context, ids []int64, enabled bool) (updated int, unknown []int64, err error)
 }
 
 // Rules persists rules.

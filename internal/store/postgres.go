@@ -148,6 +148,53 @@ func (p *Postgres) UpdateMonitor(ctx context.Context, m *Monitor) error {
 	return nil
 }
 
+func uniqueIDs(ids []int64) []int64 {
+	seen := make(map[int64]struct{}, len(ids))
+	out := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+func (p *Postgres) SetMonitorsEnabled(ctx context.Context, ids []int64, enabled bool) (int, []int64, error) {
+	uniq := uniqueIDs(ids)
+	if len(uniq) == 0 {
+		return 0, []int64{}, nil
+	}
+	rows, err := p.pool.Query(ctx,
+		`UPDATE monitors SET enabled = $1 WHERE id = ANY($2) RETURNING id`,
+		enabled, uniq)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer rows.Close()
+	found := make(map[int64]struct{}, len(uniq))
+	updated := 0
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return 0, nil, err
+		}
+		found[id] = struct{}{}
+		updated++
+	}
+	if err := rows.Err(); err != nil {
+		return 0, nil, err
+	}
+	unknown := make([]int64, 0)
+	for _, id := range uniq {
+		if _, ok := found[id]; !ok {
+			unknown = append(unknown, id)
+		}
+	}
+	return updated, unknown, nil
+}
+
 func (p *Postgres) DeleteMonitor(ctx context.Context, id int64) error {
 	return p.deleteByID(ctx, "monitors", id)
 }
