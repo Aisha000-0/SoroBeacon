@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -142,6 +143,31 @@ type Monitors interface {
 	UpdateMonitor(ctx context.Context, m *Monitor) error
 	DeleteMonitor(ctx context.Context, id int64) error
 	SetMonitorChannels(ctx context.Context, monitorID int64, channelIDs []int64) error
+	// DuplicateMonitor copies a monitor with its rules and channel
+	// attachments in one transaction. The copy is always created
+	// disabled so it cannot start alerting before it has been reviewed.
+	// Alerts are not copied.
+	DuplicateMonitor(ctx context.Context, id int64) (*Monitor, error)
+}
+
+// CopyMonitorName returns a unique name for a duplicated monitor.
+// The first copy is "name (copy)"; collisions become "name (copy 2)",
+// then (copy 3), and so on. existing is the set of names already in use.
+func CopyMonitorName(src string, existing []string) string {
+	taken := make(map[string]struct{}, len(existing))
+	for _, n := range existing {
+		taken[n] = struct{}{}
+	}
+	candidate := src + " (copy)"
+	if _, ok := taken[candidate]; !ok {
+		return candidate
+	}
+	for i := 2; ; i++ {
+		candidate = fmt.Sprintf("%s (copy %d)", src, i)
+		if _, ok := taken[candidate]; !ok {
+			return candidate
+		}
+	}
 }
 
 // Rules persists rules.

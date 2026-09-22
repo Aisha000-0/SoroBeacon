@@ -266,6 +266,82 @@ func TestNavHighlightsActivePage(t *testing.T) {
 	}
 }
 
+type duplicateWebStore struct {
+	emptyStore
+	gotID int64
+	err   error
+}
+
+func (d *duplicateWebStore) DuplicateMonitor(_ context.Context, id int64) (*store.Monitor, error) {
+	d.gotID = id
+	if d.err != nil {
+		return nil, d.err
+	}
+	return &store.Monitor{ID: 99, Name: "alpha (copy)", Enabled: false}, nil
+}
+
+func (d *duplicateWebStore) GetMonitor(_ context.Context, id int64) (*store.Monitor, error) {
+	return &store.Monitor{ID: id, Name: "alpha", Enabled: true, ContractIDs: []string{"C"}}, nil
+}
+
+func (d *duplicateWebStore) ListRules(context.Context, int64, bool) ([]store.Rule, error) {
+	return nil, nil
+}
+
+func TestDuplicateMonitorFormRedirectsToCopy(t *testing.T) {
+	st := &duplicateWebStore{}
+	s, err := New(st, rules.NewRegistry(), notify.DefaultFactory(), slog.New(slog.NewTextHandler(os.Stdout, nil)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	srv := httptest.NewServer(s.Routes())
+	defer srv.Close()
+
+	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	res, err := client.Post(srv.URL+"/monitors/7/duplicate", "application/x-www-form-urlencoded", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", res.StatusCode)
+	}
+	if loc := res.Header.Get("Location"); loc != "/monitors/99" {
+		t.Fatalf("Location = %q, want /monitors/99", loc)
+	}
+	if st.gotID != 7 {
+		t.Fatalf("DuplicateMonitor id = %d, want 7", st.gotID)
+	}
+}
+
+func TestMonitorPageHasDuplicateButton(t *testing.T) {
+	st := &duplicateWebStore{}
+	s, err := New(st, rules.NewRegistry(), notify.DefaultFactory(), slog.New(slog.NewTextHandler(os.Stdout, nil)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	srv := httptest.NewServer(s.Routes())
+	defer srv.Close()
+	res, err := http.Get(srv.URL + "/monitors/7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	if !strings.Contains(html, `action="/monitors/7/duplicate"`) {
+		t.Fatalf("monitor page missing duplicate form, got:\n%s", html)
+	}
+	if !strings.Contains(html, "Duplicate") {
+		t.Fatalf("monitor page missing Duplicate button, got:\n%s", html)
+	}
+}
+
 func TestOverviewShowsPollerLagWhenReady(t *testing.T) {
 	s := newTestServer(t).WithPoller(stubPosition{pos: poller.Position{
 		LastProcessedLedger: 100,
@@ -310,6 +386,142 @@ func TestOverviewWaitingCopyBeforeFirstPoll(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "waiting for the first successful poll") {
 		t.Fatalf("overview should wait for first poll, got %s", body)
+	}
+}
+
+func TestTimezoneDefaultIsLabelledUTC(t *testing.T) {
+	s := newTestServer(t).WithPoller(stubPosition{pos: poller.Position{
+		LastProcessedLedger: 100,
+		LatestChainLedger:   125,
+		LastSuccessfulPoll:  time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC),
+	}})
+	srv := httptest.NewServer(s.Routes())
+	defer srv.Close()
+
+	tests := []struct {
+		cookie string
+		wantTZ string
+	}{
+		{"", "utc"},
+		{"utc", "utc"},
+		{"local", "local"},
+		{"garbage", "utc"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cookie, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, srv.URL+"/", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.cookie != "" {
+				req.AddCookie(&http.Cookie{Name: tzCookie, Value: tt.cookie})
+			}
+			res, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer res.Body.Close()
+			body, err := io.ReadAll(res.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			html := string(body)
+			if !strings.Contains(html, `datetime="2026-09-22T00:00:00Z"`) {
+				t.Fatalf("missing RFC3339 datetime in %s", html[:min(len(html), 800)])
+			}
+			if !strings.Contains(html, ">2026-09-22 00:00:00 UTC</time>") {
+				t.Fatalf("missing labelled UTC fallback in %s", html[:min(len(html), 800)])
+			}
+			wantAttr := `data-tz="` + tt.wantTZ + `"`
+			if !strings.Contains(html, wantAttr) {
+				t.Fatalf("missing %s in %s", wantAttr, html[:min(len(html), 800)])
+			}
+			if !strings.Contains(html, `action="/timezone"`) || !strings.Contains(html, `name="tz"`) {
+				t.Fatal("timezone control missing from layout")
+			}
+			selected := `<option value="` + tt.wantTZ + `" selected`
+			if !strings.Contains(html, selected) {
+				t.Fatalf("expected %s, got %s", selected, html[:min(len(html), 800)])
+			}
+		})
+	}
+}
+
+func TestSetTimezoneWritesCookieAndRedirects(t *testing.T) {
+	srv := httptest.NewServer(newTestServer(t).Routes())
+	defer srv.Close()
+
+	client := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/timezone", strings.NewReader("tz=local"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Referer", srv.URL+"/alerts")
+	res, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", res.StatusCode, http.StatusSeeOther)
+	}
+	if loc := res.Header.Get("Location"); loc != "/alerts" {
+		t.Fatalf("Location = %q, want /alerts", loc)
+	}
+	var got string
+	for _, c := range res.Cookies() {
+		if c.Name == tzCookie {
+			got = c.Value
+		}
+	}
+	if got != "local" {
+		t.Fatalf("cookie = %q, want local", got)
+	}
+}
+
+func TestSetTimezoneRejectsExternalReferer(t *testing.T) {
+	srv := httptest.NewServer(newTestServer(t).Routes())
+	defer srv.Close()
+
+	client := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/timezone", strings.NewReader("tz=local"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Referer", "https://evil.example/steal")
+	res, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if loc := res.Header.Get("Location"); loc != "/" {
+		t.Fatalf("Location = %q, want /", loc)
+	}
+}
+
+func TestTemplatesDoNotCallFormatDirectly(t *testing.T) {
+	entries, err := templatesFS.ReadDir("templates")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		b, err := templatesFS.ReadFile("templates/" + e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), ".Format ") {
+			t.Errorf("%s still calls .Format directly", e.Name())
+		}
 	}
 }
 

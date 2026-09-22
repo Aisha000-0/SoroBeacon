@@ -90,6 +90,7 @@ func (s *Server) Routes() chi.Router {
 			r.Get("/", s.getMonitor)
 			r.Patch("/", s.updateMonitor)
 			r.Delete("/", s.deleteMonitor)
+			r.Post("/duplicate", s.duplicateMonitor)
 			r.Post("/rules", s.createRule)
 			r.Get("/rules", s.listRules)
 			r.Patch("/rules/{ruleID}", s.updateRule)

@@ -446,3 +446,67 @@ func TestGetStats(t *testing.T) {
 	assert.Equal(t, int64(1), stats.Alerts)
 	assert.Equal(t, int64(1), stats.AlertsLast24)
 }
+
+func TestCopyMonitorName(t *testing.T) {
+	assert.Equal(t, "m (copy)", CopyMonitorName("m", nil))
+	assert.Equal(t, "m (copy)", CopyMonitorName("m", []string{"m"}))
+	assert.Equal(t, "m (copy 2)", CopyMonitorName("m", []string{"m", "m (copy)"}))
+	assert.Equal(t, "m (copy 3)", CopyMonitorName("m", []string{"m", "m (copy)", "m (copy 2)"}))
+}
+
+func TestDuplicateMonitor_CopiesRulesChannelsDisabledUniqueName(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	src := &Monitor{Name: "alpha", ContractIDs: []string{"CAAA", "CBBB"}, Enabled: true}
+	require.NoError(t, st.CreateMonitor(ctx, src))
+	r1 := &Rule{MonitorID: src.ID, Type: "event_emitted", Params: json.RawMessage(`{"event_name":"transfer"}`), Enabled: true}
+	r2 := &Rule{MonitorID: src.ID, Type: "value_threshold", Params: json.RawMessage(`{"min":"1"}`), Enabled: false}
+	require.NoError(t, st.CreateRule(ctx, r1))
+	require.NoError(t, st.CreateRule(ctx, r2))
+	c1 := &Channel{Name: "ops", Type: "webhook", Config: json.RawMessage(`{"url":"u"}`), Enabled: true}
+	c2 := &Channel{Name: "pager", Type: "slack", Config: json.RawMessage(`{"webhook_url":"u"}`), Enabled: true}
+	require.NoError(t, st.CreateChannel(ctx, c1))
+	require.NoError(t, st.CreateChannel(ctx, c2))
+	require.NoError(t, st.SetMonitorChannels(ctx, src.ID, []int64{c1.ID, c2.ID}))
+	_, err := st.CreateAlert(ctx, &Alert{MonitorID: src.ID, RuleID: r1.ID, EventID: "ev-src"})
+	require.NoError(t, err)
+
+	copy, err := st.DuplicateMonitor(ctx, src.ID)
+	require.NoError(t, err)
+	assert.NotEqual(t, src.ID, copy.ID)
+	assert.Equal(t, "alpha (copy)", copy.Name)
+	assert.False(t, copy.Enabled, "copy must be created disabled so it cannot alert before review")
+	assert.Equal(t, []string{"CAAA", "CBBB"}, copy.ContractIDs)
+	assert.Equal(t, []int64{c1.ID, c2.ID}, copy.ChannelIDs)
+
+	got, err := st.GetMonitor(ctx, copy.ID)
+	require.NoError(t, err)
+	assert.False(t, got.Enabled)
+	assert.Equal(t, []int64{c1.ID, c2.ID}, got.ChannelIDs)
+
+	rules, err := st.ListRules(ctx, copy.ID, false)
+	require.NoError(t, err)
+	require.Len(t, rules, 2)
+	assert.Equal(t, "event_emitted", rules[0].Type)
+	assert.JSONEq(t, `{"event_name":"transfer"}`, string(rules[0].Params))
+	assert.True(t, rules[0].Enabled)
+	assert.Equal(t, "value_threshold", rules[1].Type)
+	assert.JSONEq(t, `{"min":"1"}`, string(rules[1].Params))
+	assert.False(t, rules[1].Enabled)
+
+	srcAlerts, err := st.ListAlerts(ctx, AlertFilter{MonitorID: src.ID})
+	require.NoError(t, err)
+	require.Len(t, srcAlerts, 1)
+	copyAlerts, err := st.ListAlerts(ctx, AlertFilter{MonitorID: copy.ID})
+	require.NoError(t, err)
+	assert.Empty(t, copyAlerts, "alerts must not be copied")
+
+	second, err := st.DuplicateMonitor(ctx, src.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "alpha (copy 2)", second.Name)
+	assert.False(t, second.Enabled)
+
+	_, err = st.DuplicateMonitor(ctx, 999999)
+	assert.ErrorIs(t, err, ErrNotFound)
+}
