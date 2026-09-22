@@ -106,7 +106,7 @@ func TestMonitorsAndChannelsKeysetPagination(t *testing.T) {
 	}
 
 	monIDs := collectIDs(func(after int64) []int64 {
-		list, err := st.ListMonitorsPage(ctx, ListFilter{Limit: 3, AfterID: after})
+		list, err := st.ListMonitorsPage(ctx, ListFilter{Limit: 3, AfterID: after, Sort: "id"})
 		require.NoError(t, err)
 		ids := make([]int64, len(list))
 		for i, m := range list {
@@ -130,12 +130,69 @@ func TestMonitorsAndChannelsKeysetPagination(t *testing.T) {
 	})
 	require.Len(t, chIDs, 7, "every channel must appear exactly once")
 
-	enabled, err := st.ListMonitorsPage(ctx, ListFilter{EnabledOnly: true, Limit: 50})
+	enabled, err := st.ListMonitorsPage(ctx, ListFilter{EnabledOnly: true, Limit: 50, Sort: "id"})
 	require.NoError(t, err)
 	require.Len(t, enabled, 4)
 	for _, m := range enabled {
 		assert.True(t, m.Enabled)
 	}
+}
+
+func TestListMonitorsPageSearchFilterSort(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	names := []struct {
+		name    string
+		enabled bool
+	}{
+		{"Alpha treasury", true},
+		{"beta vault", false},
+		{"Gamma treasury", true},
+		{"other", true},
+	}
+	for _, n := range names {
+		m := &Monitor{Name: n.name, ContractIDs: []string{"C"}, Enabled: n.enabled}
+		require.NoError(t, st.CreateMonitor(ctx, m))
+	}
+
+	on := true
+	off := false
+
+	list, err := st.ListMonitorsPage(ctx, ListFilter{Query: "TREASURY", Limit: 50})
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+	assert.Equal(t, "Alpha treasury", list[0].Name)
+	assert.Equal(t, "Gamma treasury", list[1].Name)
+
+	list, err = st.ListMonitorsPage(ctx, ListFilter{Query: "treasury", Enabled: &on, Limit: 50})
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+
+	list, err = st.ListMonitorsPage(ctx, ListFilter{Enabled: &off, Limit: 50})
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.Equal(t, "beta vault", list[0].Name)
+
+	list, err = st.ListMonitorsPage(ctx, ListFilter{Query: "100%", Limit: 50})
+	require.NoError(t, err)
+	assert.Empty(t, list, "LIKE metacharacters must not become wildcards")
+
+	list, err = st.ListMonitorsPage(ctx, ListFilter{Sort: "name", Limit: 50})
+	require.NoError(t, err)
+	require.Len(t, list, 4)
+	assert.Equal(t, "Alpha treasury", list[0].Name)
+	assert.Equal(t, "beta vault", list[1].Name, "name sort is case-insensitive")
+	assert.Equal(t, "Gamma treasury", list[2].Name)
+	assert.Equal(t, "other", list[3].Name)
+
+	// Name-sort keyset: after Alpha, the next page starts at beta.
+	page1, err := st.ListMonitorsPage(ctx, ListFilter{Sort: "name", Limit: 1})
+	require.NoError(t, err)
+	require.Len(t, page1, 1)
+	page2, err := st.ListMonitorsPage(ctx, ListFilter{Sort: "name", Limit: 1, AfterID: page1[0].ID})
+	require.NoError(t, err)
+	require.Len(t, page2, 1)
+	assert.Equal(t, "beta vault", page2[0].Name)
 }
 
 func TestRuleCRUDAndCascade(t *testing.T) {

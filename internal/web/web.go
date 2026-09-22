@@ -14,6 +14,7 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -185,8 +186,22 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) monitors(w http.ResponseWriter, r *http.Request) {
-	f := store.ListFilter{Limit: 50}
-	if v := r.URL.Query().Get("cursor"); v != "" {
+	q := r.URL.Query()
+	f := store.ListFilter{Limit: 50, Query: strings.TrimSpace(q.Get("q"))}
+	switch q.Get("enabled") {
+	case "true":
+		t := true
+		f.Enabled = &t
+		f.EnabledOnly = true
+	case "false":
+		t := false
+		f.Enabled = &t
+	}
+	switch q.Get("sort") {
+	case "id", "created_at", "name":
+		f.Sort = q.Get("sort")
+	}
+	if v := q.Get("cursor"); v != "" {
 		f.AfterID, _ = strconv.ParseInt(v, 10, 64)
 	}
 	monitors, err := s.store.ListMonitorsPage(r.Context(), f)
@@ -198,7 +213,41 @@ func (s *Server) monitors(w http.ResponseWriter, r *http.Request) {
 	if len(monitors) == f.Limit {
 		next = strconv.FormatInt(monitors[len(monitors)-1].ID, 10)
 	}
-	s.render(w, "monitors", map[string]any{"Title": "Monitors", "Monitors": monitors, "NextCursor": next})
+	enabled := q.Get("enabled")
+	sort := f.Sort
+	if sort == "" {
+		sort = "name"
+	}
+	data := map[string]any{
+		"Title": "Monitors", "Monitors": monitors, "NextCursor": next,
+		"Query": f.Query, "Enabled": enabled, "Sort": sort,
+	}
+	if next != "" {
+		// template.URL so q/enabled/sort query separators are not %26-escaped.
+		data["OlderHref"] = template.URL("/monitors?" + monitorFilterQuery(f.Query, enabled, f.Sort) + "cursor=" + next)
+	}
+	s.render(w, "monitors", data)
+}
+
+// monitorFilterQuery is the q/enabled/sort prefix preserved on the Older
+// paging link so filters survive navigation. Empty when every control is
+// at its default, so the existing `?cursor=` link stays stable.
+func monitorFilterQuery(q, enabled, sort string) string {
+	v := url.Values{}
+	if q != "" {
+		v.Set("q", q)
+	}
+	if enabled == "true" || enabled == "false" {
+		v.Set("enabled", enabled)
+	}
+	if sort != "" && sort != "name" {
+		v.Set("sort", sort)
+	}
+	enc := v.Encode()
+	if enc == "" {
+		return ""
+	}
+	return enc + "&"
 }
 
 func (s *Server) createMonitor(w http.ResponseWriter, r *http.Request) {
