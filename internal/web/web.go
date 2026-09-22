@@ -52,6 +52,27 @@ type Server struct {
 // templateFuncs are available to every page template.
 var templateFuncs = template.FuncMap{
 	"prettyJSON": prettyJSON,
+	"formatTime": formatTime,
+}
+
+const tsLayout = "2006-01-02 15:04:05"
+
+// formatTime is the only dashboard timestamp renderer. The server always
+// emits labelled UTC so a viewer with JavaScript disabled still knows the
+// zone; when the preference is "local", a data-tz attribute lets the
+// browser rewrite the visible text to the viewer's zone after load.
+func formatTime(t time.Time, tz string) template.HTML {
+	if t.IsZero() {
+		return ""
+	}
+	utc := t.UTC()
+	label := utc.Format(tsLayout) + " UTC"
+	return template.HTML(fmt.Sprintf(
+		`<time datetime="%s" data-tz="%s">%s</time>`,
+		template.HTMLEscapeString(utc.Format(time.RFC3339)),
+		template.HTMLEscapeString(parseTZ(tz)),
+		template.HTMLEscapeString(label),
+	))
 }
 
 // prettyJSON indents raw JSON for display. Invalid or empty input falls
@@ -92,6 +113,7 @@ func (s *Server) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", s.index)
 	r.Get("/favicon.ico", s.favicon)
+	r.Post("/timezone", s.setTimezone)
 
 	r.Get("/monitors", s.monitors)
 	r.Post("/monitors", s.createMonitor)
@@ -125,14 +147,78 @@ var navSection = map[string]string{
 	"alerts":   "alerts",
 }
 
-func (s *Server) render(w http.ResponseWriter, page string, data any) {
+func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, data any) {
 	if m, ok := data.(map[string]any); ok {
 		m["Active"] = navSection[page]
+		m["Timezone"] = tzFromRequest(r)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.pages[page].ExecuteTemplate(w, "layout", data); err != nil {
 		s.log.Error("render page", "page", page, "err", err)
 	}
+}
+
+const (
+	tzCookie       = "tz"
+	tzCookieMaxAge = 365 * 24 * 3600
+)
+
+// parseTZ allowlists the two dashboard timezone states. Anything else
+// (missing cookie, typos, empty) is UTC so existing unlabelled times
+// become labelled UTC rather than silently switching zone.
+func parseTZ(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "local":
+		return "local"
+	default:
+		return "utc"
+	}
+}
+
+func tzFromRequest(r *http.Request) string {
+	c, err := r.Cookie(tzCookie)
+	if err != nil {
+		return "utc"
+	}
+	return parseTZ(c.Value)
+}
+
+// safeReturn keeps the timezone POST from bouncing to an external Referer.
+func safeReturn(r *http.Request) string {
+	ref := r.Header.Get("Referer")
+	if ref == "" {
+		return "/"
+	}
+	u, err := url.Parse(ref)
+	if err != nil {
+		return "/"
+	}
+	if u.Host != "" && u.Host != r.Host {
+		return "/"
+	}
+	p := u.RequestURI()
+	if p == "" || !strings.HasPrefix(p, "/") {
+		return "/"
+	}
+	return p
+}
+
+// setTimezone persists the dashboard timezone in a cookie and redirects
+// back so the next render already has the right data-tz values.
+func (s *Server) setTimezone(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	tz := parseTZ(r.FormValue("tz"))
+	http.SetCookie(w, &http.Cookie{
+		Name:     tzCookie,
+		Value:    tz,
+		Path:     "/",
+		MaxAge:   tzCookieMaxAge,
+		SameSite: http.SameSiteLaxMode,
+	})
+	http.Redirect(w, r, safeReturn(r), http.StatusSeeOther)
 }
 
 func (s *Server) fail(w http.ResponseWriter, err error) {
@@ -182,7 +268,7 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 			data["Poller"] = pos
 		}
 	}
-	s.render(w, "index", data)
+	s.render(w, r, "index", data)
 }
 
 func (s *Server) monitors(w http.ResponseWriter, r *http.Request) {
@@ -226,7 +312,7 @@ func (s *Server) monitors(w http.ResponseWriter, r *http.Request) {
 		// template.URL so q/enabled/sort query separators are not %26-escaped.
 		data["OlderHref"] = template.URL("/monitors?" + monitorFilterQuery(f.Query, enabled, f.Sort) + "cursor=" + next)
 	}
-	s.render(w, "monitors", data)
+	s.render(w, r, "monitors", data)
 }
 
 // monitorFilterQuery is the q/enabled/sort prefix preserved on the Older
@@ -296,7 +382,7 @@ func (s *Server) monitorDetail(w http.ResponseWriter, r *http.Request) {
 	for _, cid := range m.ChannelIDs {
 		attached[cid] = true
 	}
-	s.render(w, "monitor", map[string]any{
+	s.render(w, r, "monitor", map[string]any{
 		"Title": m.Name, "Monitor": m, "Rules": ruleList,
 		"Channels": channels, "Attached": attached, "RuleTypes": s.registry.Types(),
 	})
@@ -444,7 +530,7 @@ func (s *Server) channels(w http.ResponseWriter, r *http.Request) {
 	if len(channels) == f.Limit {
 		next = strconv.FormatInt(channels[len(channels)-1].ID, 10)
 	}
-	s.render(w, "channels", map[string]any{
+	s.render(w, r, "channels", map[string]any{
 		"Title": "Channels", "Channels": channels, "ChannelTypes": s.factory.Types(),
 		"NextCursor": next,
 	})
@@ -546,7 +632,7 @@ func (s *Server) alerts(w http.ResponseWriter, r *http.Request) {
 	if len(alerts) == f.Limit {
 		next = strconv.FormatInt(alerts[len(alerts)-1].ID, 10)
 	}
-	s.render(w, "alerts", map[string]any{
+	s.render(w, r, "alerts", map[string]any{
 		"Title": "Alerts", "Alerts": alerts, "Monitors": monitors,
 		"MonitorNames": names, "SelectedMonitor": selected, "NextCursor": next,
 	})
@@ -591,7 +677,7 @@ func (s *Server) alertDeliveries(w http.ResponseWriter, r *http.Request) {
 			template.HTMLEscapeString(names[a.ChannelID]),
 			pillClass, template.HTMLEscapeString(a.Status),
 			template.HTMLEscapeString(a.ResponseSnippet),
-			template.HTMLEscapeString(a.AttemptedAt.Format("2006-01-02 15:04:05")))
+			formatTime(a.AttemptedAt, tzFromRequest(r)))
 	}
 	fmt.Fprint(w, `</table>`)
 }

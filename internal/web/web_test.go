@@ -228,6 +228,142 @@ func TestOverviewWaitingCopyBeforeFirstPoll(t *testing.T) {
 	}
 }
 
+func TestTimezoneDefaultIsLabelledUTC(t *testing.T) {
+	s := newTestServer(t).WithPoller(stubPosition{pos: poller.Position{
+		LastProcessedLedger: 100,
+		LatestChainLedger:   125,
+		LastSuccessfulPoll:  time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC),
+	}})
+	srv := httptest.NewServer(s.Routes())
+	defer srv.Close()
+
+	tests := []struct {
+		cookie string
+		wantTZ string
+	}{
+		{"", "utc"},
+		{"utc", "utc"},
+		{"local", "local"},
+		{"garbage", "utc"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cookie, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, srv.URL+"/", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.cookie != "" {
+				req.AddCookie(&http.Cookie{Name: tzCookie, Value: tt.cookie})
+			}
+			res, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer res.Body.Close()
+			body, err := io.ReadAll(res.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			html := string(body)
+			if !strings.Contains(html, `datetime="2026-09-22T00:00:00Z"`) {
+				t.Fatalf("missing RFC3339 datetime in %s", html[:min(len(html), 800)])
+			}
+			if !strings.Contains(html, ">2026-09-22 00:00:00 UTC</time>") {
+				t.Fatalf("missing labelled UTC fallback in %s", html[:min(len(html), 800)])
+			}
+			wantAttr := `data-tz="` + tt.wantTZ + `"`
+			if !strings.Contains(html, wantAttr) {
+				t.Fatalf("missing %s in %s", wantAttr, html[:min(len(html), 800)])
+			}
+			if !strings.Contains(html, `action="/timezone"`) || !strings.Contains(html, `name="tz"`) {
+				t.Fatal("timezone control missing from layout")
+			}
+			selected := `<option value="` + tt.wantTZ + `" selected`
+			if !strings.Contains(html, selected) {
+				t.Fatalf("expected %s, got %s", selected, html[:min(len(html), 800)])
+			}
+		})
+	}
+}
+
+func TestSetTimezoneWritesCookieAndRedirects(t *testing.T) {
+	srv := httptest.NewServer(newTestServer(t).Routes())
+	defer srv.Close()
+
+	client := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/timezone", strings.NewReader("tz=local"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Referer", srv.URL+"/alerts")
+	res, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", res.StatusCode, http.StatusSeeOther)
+	}
+	if loc := res.Header.Get("Location"); loc != "/alerts" {
+		t.Fatalf("Location = %q, want /alerts", loc)
+	}
+	var got string
+	for _, c := range res.Cookies() {
+		if c.Name == tzCookie {
+			got = c.Value
+		}
+	}
+	if got != "local" {
+		t.Fatalf("cookie = %q, want local", got)
+	}
+}
+
+func TestSetTimezoneRejectsExternalReferer(t *testing.T) {
+	srv := httptest.NewServer(newTestServer(t).Routes())
+	defer srv.Close()
+
+	client := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/timezone", strings.NewReader("tz=local"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Referer", "https://evil.example/steal")
+	res, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if loc := res.Header.Get("Location"); loc != "/" {
+		t.Fatalf("Location = %q, want /", loc)
+	}
+}
+
+func TestTemplatesDoNotCallFormatDirectly(t *testing.T) {
+	entries, err := templatesFS.ReadDir("templates")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		b, err := templatesFS.ReadFile("templates/" + e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), ".Format ") {
+			t.Errorf("%s still calls .Format directly", e.Name())
+		}
+	}
+}
+
 func TestPrettyJSON(t *testing.T) {
 	tests := []struct {
 		name string
