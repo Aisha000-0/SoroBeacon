@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/sorotrail/sorobeacon/internal/stellar"
 	"github.com/sorotrail/sorobeacon/internal/store"
@@ -70,7 +71,11 @@ func (s *Server) createMonitor(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listMonitors(w http.ResponseWriter, r *http.Request) {
-	monitors, err := s.store.ListMonitors(r.Context(), r.URL.Query().Get("enabled") == "true")
+	f, ok := parseListFilter(w, r)
+	if !ok {
+		return
+	}
+	monitors, err := s.store.ListMonitorsPage(r.Context(), f)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -78,7 +83,11 @@ func (s *Server) listMonitors(w http.ResponseWriter, r *http.Request) {
 	if monitors == nil {
 		monitors = []store.Monitor{}
 	}
-	writeJSON(w, http.StatusOK, monitors)
+	next := ""
+	if len(monitors) == effectivePageLimit(f.Limit) {
+		next = strconv.FormatInt(monitors[len(monitors)-1].ID, 10)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"monitors": monitors, "next_cursor": next})
 }
 
 func (s *Server) getMonitor(w http.ResponseWriter, r *http.Request) {
