@@ -30,16 +30,24 @@ type HealthChecker interface {
 }
 
 type Server struct {
-	store    store.Store
-	registry *rules.Registry
-	factory  *notify.Factory
-	rpc      HealthChecker
-	log      *slog.Logger
+	store     store.Store
+	registry  *rules.Registry
+	factory   *notify.Factory
+	rpc       HealthChecker
+	log       *slog.Logger
+	rateLimit RateLimitConfig
 }
 
-// New wires an API server.
+// New wires an API server. Rate limiting stays off until WithRateLimit.
 func New(st store.Store, reg *rules.Registry, f *notify.Factory, rpc HealthChecker, log *slog.Logger) *Server {
 	return &Server{store: st, registry: reg, factory: f, rpc: rpc, log: log}
+}
+
+// WithRateLimit installs the per-client API limiter. Passing RPS <= 0
+// leaves the limiter disabled (the zero-value default).
+func (s *Server) WithRateLimit(cfg RateLimitConfig) *Server {
+	s.rateLimit = cfg
+	return s
 }
 
 // Routes returns the API router. Mounted under /api/v1 by cmd/sorobeacon.
@@ -49,6 +57,7 @@ func New(st store.Store, reg *rules.Registry, f *notify.Factory, rpc HealthCheck
 func (s *Server) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
+	r.Use(RateLimitMiddleware(s.rateLimit))
 
 	r.Route("/monitors", func(r chi.Router) {
 		r.Post("/", s.createMonitor)
