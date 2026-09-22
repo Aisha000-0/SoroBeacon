@@ -130,6 +130,27 @@
         }
       }
     },
+    "/monitors/{id}/duplicate": {
+      "parameters": [
+        { "$ref": "#/components/parameters/ID" }
+      ],
+      "post": {
+        "summary": "Duplicate a monitor",
+        "description": "Copies the monitor with its rules and channel attachments under a unique name. The copy is created disabled so it cannot start alerting before review. Alerts are not copied.",
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Monitor" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
     "/monitors/{id}/rules": {
       "parameters": [
         { "$ref": "#/components/parameters/ID" }

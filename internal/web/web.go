@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"log/slog"
@@ -98,6 +99,7 @@ func (s *Server) Routes() chi.Router {
 	r.Get("/monitors/{id}", s.monitorDetail)
 	r.Post("/monitors/{id}/toggle", s.toggleMonitor)
 	r.Post("/monitors/{id}/delete", s.deleteMonitor)
+	r.Post("/monitors/{id}/duplicate", s.duplicateMonitor)
 	r.Post("/monitors/{id}/rules", s.createRule)
 	r.Post("/monitors/{id}/rules/{ruleID}/toggle", s.toggleRule)
 	r.Post("/monitors/{id}/rules/{ruleID}/delete", s.deleteRule)
@@ -319,6 +321,24 @@ func (s *Server) toggleMonitor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/monitors", http.StatusSeeOther)
+}
+
+func (s *Server) duplicateMonitor(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	m, err := s.store.DuplicateMonitor(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		s.fail(w, err)
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("/monitors/%d", m.ID), http.StatusSeeOther)
 }
 
 func (s *Server) deleteMonitor(w http.ResponseWriter, r *http.Request) {

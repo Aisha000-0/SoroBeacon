@@ -181,6 +181,82 @@ func TestNavHighlightsActivePage(t *testing.T) {
 	}
 }
 
+type duplicateWebStore struct {
+	emptyStore
+	gotID int64
+	err   error
+}
+
+func (d *duplicateWebStore) DuplicateMonitor(_ context.Context, id int64) (*store.Monitor, error) {
+	d.gotID = id
+	if d.err != nil {
+		return nil, d.err
+	}
+	return &store.Monitor{ID: 99, Name: "alpha (copy)", Enabled: false}, nil
+}
+
+func (d *duplicateWebStore) GetMonitor(_ context.Context, id int64) (*store.Monitor, error) {
+	return &store.Monitor{ID: id, Name: "alpha", Enabled: true, ContractIDs: []string{"C"}}, nil
+}
+
+func (d *duplicateWebStore) ListRules(context.Context, int64, bool) ([]store.Rule, error) {
+	return nil, nil
+}
+
+func TestDuplicateMonitorFormRedirectsToCopy(t *testing.T) {
+	st := &duplicateWebStore{}
+	s, err := New(st, rules.NewRegistry(), notify.DefaultFactory(), slog.New(slog.NewTextHandler(os.Stdout, nil)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	srv := httptest.NewServer(s.Routes())
+	defer srv.Close()
+
+	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	res, err := client.Post(srv.URL+"/monitors/7/duplicate", "application/x-www-form-urlencoded", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", res.StatusCode)
+	}
+	if loc := res.Header.Get("Location"); loc != "/monitors/99" {
+		t.Fatalf("Location = %q, want /monitors/99", loc)
+	}
+	if st.gotID != 7 {
+		t.Fatalf("DuplicateMonitor id = %d, want 7", st.gotID)
+	}
+}
+
+func TestMonitorPageHasDuplicateButton(t *testing.T) {
+	st := &duplicateWebStore{}
+	s, err := New(st, rules.NewRegistry(), notify.DefaultFactory(), slog.New(slog.NewTextHandler(os.Stdout, nil)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	srv := httptest.NewServer(s.Routes())
+	defer srv.Close()
+	res, err := http.Get(srv.URL + "/monitors/7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	if !strings.Contains(html, `action="/monitors/7/duplicate"`) {
+		t.Fatalf("monitor page missing duplicate form, got:\n%s", html)
+	}
+	if !strings.Contains(html, "Duplicate") {
+		t.Fatalf("monitor page missing Duplicate button, got:\n%s", html)
+	}
+}
+
 func TestOverviewShowsPollerLagWhenReady(t *testing.T) {
 	s := newTestServer(t).WithPoller(stubPosition{pos: poller.Position{
 		LastProcessedLedger: 100,
