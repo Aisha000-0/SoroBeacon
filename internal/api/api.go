@@ -86,6 +86,40 @@ func (s *Server) Routes() chi.Router {
 
 // --- helpers ---
 
+// parseListFilter reads the shared listing query params (enabled, limit,
+// cursor) used by GET /monitors and GET /channels so they stay on the
+// same dialect as GET /alerts.
+func parseListFilter(w http.ResponseWriter, r *http.Request) (store.ListFilter, bool) {
+	q := r.URL.Query()
+	f := store.ListFilter{EnabledOnly: q.Get("enabled") == "true"}
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			writeErr(w, r, http.StatusBadRequest, "invalid limit")
+			return f, false
+		}
+		f.Limit = n
+	}
+	if v := q.Get("cursor"); v != "" {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			writeErr(w, r, http.StatusBadRequest, "invalid cursor")
+			return f, false
+		}
+		f.AfterID = id
+	}
+	return f, true
+}
+
+// effectivePageLimit is the size ListMonitorsPage / ListChannelsPage will
+// actually return: a missing or >500 limit becomes 50, matching the store.
+func effectivePageLimit(limit int) int {
+	if limit <= 0 || limit > 500 {
+		return 50
+	}
+	return limit
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
