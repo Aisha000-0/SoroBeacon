@@ -159,6 +159,52 @@ func (s *Server) updateMonitor(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, m)
 }
 
+// maxBulkMonitors is the documented ceiling on POST /monitors/bulk. A
+// planned pause should never need more than this in one shot; a larger
+// body is almost certainly an unbounded script. There is no "all
+// monitors" shorthand on purpose — an accidental global disable is
+// exactly the failure this endpoint must not enable.
+const maxBulkMonitors = 100
+
+type bulkMonitorRequest struct {
+	IDs     []int64 `json:"ids"`
+	Enabled *bool   `json:"enabled"`
+}
+
+func (s *Server) bulkMonitors(w http.ResponseWriter, r *http.Request) {
+	var req bulkMonitorRequest
+	if !readJSON(w, r, &req) {
+		return
+	}
+	var details []FieldError
+	if len(req.IDs) == 0 {
+		details = append(details, FieldError{Field: "ids", Reason: "must not be empty"})
+	}
+	if len(req.IDs) > maxBulkMonitors {
+		details = append(details, FieldError{Field: "ids", Reason: "at most 100 monitors per request"})
+	}
+	if req.Enabled == nil {
+		details = append(details, FieldError{Field: "enabled", Reason: "enabled is required"})
+	}
+	if len(details) > 0 {
+		writeValidation(w, r, details)
+		return
+	}
+	updated, unknown, err := s.store.SetMonitorsEnabled(r.Context(), req.IDs, *req.Enabled)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if unknown == nil {
+		unknown = []int64{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"updated":     updated,
+		"unknown_ids": unknown,
+		"enabled":     *req.Enabled,
+	})
+}
+
 func (s *Server) deleteMonitor(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r, "id")
 	if err != nil {

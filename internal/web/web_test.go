@@ -85,6 +85,8 @@ func TestMonitorsPageShowsOlderLinkOnFullPage(t *testing.T) {
 	}
 }
 
+func TestMonitorsPageShowsBulkActionBar(t *testing.T) {
+	s, err := New(pagingStore{n: 2}, rules.NewRegistry(), notify.DefaultFactory(), slog.New(slog.NewTextHandler(os.Stdout, nil)))
 func TestMonitorsPageFilterControlsAndPreservedPaging(t *testing.T) {
 	s, err := New(pagingStore{n: 50}, rules.NewRegistry(), notify.DefaultFactory(), slog.New(slog.NewTextHandler(os.Stdout, nil)))
 	if err != nil {
@@ -92,6 +94,7 @@ func TestMonitorsPageFilterControlsAndPreservedPaging(t *testing.T) {
 	}
 	srv := httptest.NewServer(s.Routes())
 	defer srv.Close()
+	res, err := http.Get(srv.URL + "/monitors")
 	res, err := http.Get(srv.URL + "/monitors?q=treasury&enabled=true&sort=id")
 	if err != nil {
 		t.Fatal(err)
@@ -102,6 +105,17 @@ func TestMonitorsPageFilterControlsAndPreservedPaging(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := string(body)
+	for _, want := range []string{
+		`action="/monitors/bulk"`,
+		`name="ids"`,
+		`Enable selected`,
+		`Disable selected`,
+		`form="bulk-monitors"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("monitors page missing %q in %s", want, html)
+		}
+	}
 	if !strings.Contains(html, `name="q"`) || !strings.Contains(html, `value="treasury"`) {
 		t.Fatalf("expected name search control populated from q, got:\n%s", html)
 	}

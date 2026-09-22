@@ -66,6 +66,36 @@ func TestMonitorCRUD(t *testing.T) {
 	assert.ErrorIs(t, st.DeleteMonitor(ctx, m.ID), ErrNotFound)
 }
 
+func TestSetMonitorsEnabled_AtomicUnknownIDs(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	a := &Monitor{Name: "a", ContractIDs: []string{"C"}, Enabled: true}
+	b := &Monitor{Name: "b", ContractIDs: []string{"C"}, Enabled: true}
+	require.NoError(t, st.CreateMonitor(ctx, a))
+	require.NoError(t, st.CreateMonitor(ctx, b))
+
+	updated, unknown, err := st.SetMonitorsEnabled(ctx, []int64{a.ID, b.ID, 99999, a.ID}, false)
+	require.NoError(t, err)
+	assert.Equal(t, 2, updated)
+	require.Equal(t, []int64{99999}, unknown)
+
+	gotA, err := st.GetMonitor(ctx, a.ID)
+	require.NoError(t, err)
+	gotB, err := st.GetMonitor(ctx, b.ID)
+	require.NoError(t, err)
+	assert.False(t, gotA.Enabled)
+	assert.False(t, gotB.Enabled)
+
+	updated, unknown, err = st.SetMonitorsEnabled(ctx, []int64{a.ID}, true)
+	require.NoError(t, err)
+	assert.Equal(t, 1, updated)
+	assert.Empty(t, unknown)
+	gotA, err = st.GetMonitor(ctx, a.ID)
+	require.NoError(t, err)
+	assert.True(t, gotA.Enabled)
+}
+
 func TestMonitorsAndChannelsKeysetPagination(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
