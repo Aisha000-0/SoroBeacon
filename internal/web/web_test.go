@@ -87,15 +87,12 @@ func TestMonitorsPageShowsOlderLinkOnFullPage(t *testing.T) {
 
 func TestMonitorsPageShowsBulkActionBar(t *testing.T) {
 	s, err := New(pagingStore{n: 2}, rules.NewRegistry(), notify.DefaultFactory(), slog.New(slog.NewTextHandler(os.Stdout, nil)))
-func TestMonitorsPageFilterControlsAndPreservedPaging(t *testing.T) {
-	s, err := New(pagingStore{n: 50}, rules.NewRegistry(), notify.DefaultFactory(), slog.New(slog.NewTextHandler(os.Stdout, nil)))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	srv := httptest.NewServer(s.Routes())
 	defer srv.Close()
 	res, err := http.Get(srv.URL + "/monitors")
-	res, err := http.Get(srv.URL + "/monitors?q=treasury&enabled=true&sort=id")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,6 +113,25 @@ func TestMonitorsPageFilterControlsAndPreservedPaging(t *testing.T) {
 			t.Fatalf("monitors page missing %q in %s", want, html)
 		}
 	}
+}
+
+func TestMonitorsPageFilterControlsAndPreservedPaging(t *testing.T) {
+	s, err := New(pagingStore{n: 50}, rules.NewRegistry(), notify.DefaultFactory(), slog.New(slog.NewTextHandler(os.Stdout, nil)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	srv := httptest.NewServer(s.Routes())
+	defer srv.Close()
+	res, err := http.Get(srv.URL + "/monitors?q=treasury&enabled=true&sort=id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
 	if !strings.Contains(html, `name="q"`) || !strings.Contains(html, `value="treasury"`) {
 		t.Fatalf("expected name search control populated from q, got:\n%s", html)
 	}
