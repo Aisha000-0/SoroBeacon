@@ -115,6 +115,7 @@ func (s *Server) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", s.index)
 	r.Get("/favicon.ico", s.favicon)
+	r.Post("/theme", s.setTheme)
 	r.Post("/timezone", s.setTimezone)
 
 	r.Get("/monitors", s.monitors)
@@ -154,12 +155,40 @@ var navSection = map[string]string{
 func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, data any) {
 	if m, ok := data.(map[string]any); ok {
 		m["Active"] = navSection[page]
+		m["Theme"] = themeFromRequest(r)
 		m["Timezone"] = tzFromRequest(r)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.pages[page].ExecuteTemplate(w, "layout", data); err != nil {
 		s.log.Error("render page", "page", page, "err", err)
 	}
+}
+
+const (
+	themeCookie       = "theme"
+	themeCookieMaxAge = 365 * 24 * 3600
+)
+
+// parseTheme allowlists the three dashboard theme states. Anything else
+// (missing cookie, typos, empty) is "system" so existing users keep the
+// OS-follow default.
+func parseTheme(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "light":
+		return "light"
+	case "dark":
+		return "dark"
+	default:
+		return "system"
+	}
+}
+
+func themeFromRequest(r *http.Request) string {
+	c, err := r.Cookie(themeCookie)
+	if err != nil {
+		return "system"
+	}
+	return parseTheme(c.Value)
 }
 
 const (
@@ -207,6 +236,25 @@ func safeReturn(r *http.Request) string {
 	return p
 }
 
+// setTheme persists the dashboard theme in a cookie and redirects back so
+// the next render already has the right data-theme (no flash of the other
+// scheme from a client-side fix-up).
+func (s *Server) setTheme(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	theme := parseTheme(r.FormValue("theme"))
+	http.SetCookie(w, &http.Cookie{
+		Name:     themeCookie,
+		Value:    theme,
+		Path:     "/",
+		MaxAge:   themeCookieMaxAge,
+		SameSite: http.SameSiteLaxMode,
+	})
+	http.Redirect(w, r, safeReturn(r), http.StatusSeeOther)
+}
+
 // setTimezone persists the dashboard timezone in a cookie and redirects
 // back so the next render already has the right data-tz values.
 func (s *Server) setTimezone(w http.ResponseWriter, r *http.Request) {
@@ -241,7 +289,6 @@ func pathID(r *http.Request, name string) (int64, error) {
 func (s *Server) favicon(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/svg+xml")
 	w.Header().Set("Cache-Control", "public, max-age=604800")
-	w.Write(faviconSVG)
 	if _, err := w.Write(faviconSVG); err != nil {
 		s.log.Warn("writing favicon response", "err", err)
 	}
