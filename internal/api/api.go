@@ -15,6 +15,7 @@ import (
 
 	"github.com/sorotrail/sorobeacon/internal/buildinfo"
 	"github.com/sorotrail/sorobeacon/internal/notify"
+	"github.com/sorotrail/sorobeacon/internal/poller"
 	"github.com/sorotrail/sorobeacon/internal/reqid"
 	"github.com/sorotrail/sorobeacon/internal/rules"
 	"github.com/sorotrail/sorobeacon/internal/stellar"
@@ -29,17 +30,39 @@ type HealthChecker interface {
 	GetHealth(ctx context.Context) (*stellar.Health, error)
 }
 
+// PositionReader is the poller's race-free snapshot of ingest progress.
+// Optional: health/readyz omit poller fields when it is nil or not Ready.
+type PositionReader interface {
+	Position() poller.Position
+}
+
 type Server struct {
-	store    store.Store
-	registry *rules.Registry
-	factory  *notify.Factory
-	rpc      HealthChecker
-	log      *slog.Logger
+	store              store.Store
+	registry           *rules.Registry
+	factory            *notify.Factory
+	rpc                HealthChecker
+	log                *slog.Logger
+	poller             PositionReader
+	readyzLagThreshold uint32
 }
 
 // New wires an API server.
 func New(st store.Store, reg *rules.Registry, f *notify.Factory, rpc HealthChecker, log *slog.Logger) *Server {
 	return &Server{store: st, registry: reg, factory: f, rpc: rpc, log: log}
+}
+
+// WithPoller attaches the ingest-position source used by /health and /readyz.
+func (s *Server) WithPoller(p PositionReader) *Server {
+	s.poller = p
+	return s
+}
+
+// WithReadyzLagThreshold fails /readyz when ledger lag exceeds n.
+// Zero (the default) leaves the probe unaffected so existing deployments
+// cannot start failing without opting in.
+func (s *Server) WithReadyzLagThreshold(n uint32) *Server {
+	s.readyzLagThreshold = n
+	return s
 }
 
 // Routes returns the API router. Mounted under /api/v1 by cmd/sorobeacon.
@@ -144,7 +167,25 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	} else {
 		out["rpc_latest_ledger"] = h.LatestLedger
 	}
+	s.attachPoller(out)
 	writeJSON(w, status, out)
+}
+
+// attachPoller adds last processed / chain ledger / lag / last poll time
+// when a successful poll has completed. Absent before then — zeros would
+// read as "perfectly in sync".
+func (s *Server) attachPoller(out map[string]any) {
+	if s.poller == nil {
+		return
+	}
+	pos := s.poller.Position()
+	if !pos.Ready() {
+		return
+	}
+	out["last_processed_ledger"] = pos.LastProcessedLedger
+	out["latest_chain_ledger"] = pos.LatestChainLedger
+	out["ledger_lag"] = pos.Lag()
+	out["last_successful_poll"] = pos.LastSuccessfulPoll.UTC().Format(time.RFC3339)
 }
 
 func (s *Server) version(w http.ResponseWriter, r *http.Request) {

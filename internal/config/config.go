@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -46,6 +47,9 @@ type Config struct {
 	HTTPAddr string
 	// LogLevel is the minimum slog level (debug, info, warn, error).
 	LogLevel slog.Level
+	// ReadyzLagThreshold is the ledger lag at which /readyz fails.
+	// Zero (the default) disables the check so existing probes stay green.
+	ReadyzLagThreshold uint32
 }
 
 // Load reads configuration from the environment. DATABASE_URL is the only
@@ -115,6 +119,14 @@ func Load() (Config, error) {
 			return cfg, err
 		}
 		cfg.LogLevel = lvl
+	}
+
+	if v := os.Getenv("READYZ_LAG_THRESHOLD"); v != "" {
+		n, err := strconv.ParseUint(v, 10, 32)
+		if err != nil {
+			return cfg, fmt.Errorf("invalid READYZ_LAG_THRESHOLD %q: %w", v, err)
+		}
+		cfg.ReadyzLagThreshold = uint32(n)
 	}
 
 	return cfg, nil
