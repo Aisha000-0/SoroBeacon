@@ -6,7 +6,7 @@ SoroBeacon ships a server-rendered dashboard (Go `html/template` + htmx — no b
 
 | Page | What you can do |
 | --- | --- |
-| **Overview** (`/`) | Stats at a glance — monitors, rules, channels, alerts in the last 24h, last ingested ledger — plus the most recent alerts. |
+| **Overview** (`/`) | Stats at a glance — monitors, rules, channels, alerts in the last 24h, last ingested ledger — plus a 30-day UTC daily alert chart (inline SVG, no JS charting library) and the most recent alerts. Quiet days are explicit zeroes; an instance with no alerts shows an empty state rather than a flat axis. |
 | **Monitors** (`/monitors`) | List, create (name + contract IDs), enable/disable, delete. Click through to a monitor for its rules and channel wiring. |
 | **Monitor detail** (`/monitors/{id}`) | Add/delete rules (type + params JSON), attach/detach notification channels with checkboxes. |
 | **Channels** (`/channels`) | List, create (type + config JSON), delete — and a **Send test** button that fires a synthetic alert through the real channel and shows the result inline. |

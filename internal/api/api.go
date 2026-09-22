@@ -136,6 +136,7 @@ func (s *Server) Routes() chi.Router {
 	r.Get("/readyz", s.readyz)
 	r.Get("/version", s.version)
 	r.Get("/stats", s.stats)
+	r.Get("/stats/alerts-daily", s.alertsDaily)
 
 	return r
 }
@@ -407,4 +408,21 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, st)
+}
+
+type alertsDailyResponse struct {
+	Timezone string                `json:"timezone"`
+	Days     []store.AlertDayCount `json:"days"`
+}
+
+func (s *Server) alertsDaily(w http.ResponseWriter, r *http.Request) {
+	days, err := s.store.AlertCountsByDay(r.Context(), store.AlertSeriesDays)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if days == nil {
+		days = []store.AlertDayCount{}
+	}
+	writeJSON(w, http.StatusOK, alertsDailyResponse{Timezone: "UTC", Days: days})
 }

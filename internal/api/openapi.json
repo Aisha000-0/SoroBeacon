@@ -539,6 +539,39 @@
           }
         }
       }
+    },
+    "/stats/alerts-daily": {
+      "get": {
+        "summary": "Daily alert counts for the last 30 UTC days",
+        "description": "UTC calendar-day buckets, including explicit zeroes for quiet days. Days with no alerts are present so a chart has no gaps.",
+        "responses": {
+          "200": {
+            "description": "30-day UTC series",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["timezone", "days"],
+                  "properties": {
+                    "timezone": { "type": "string", "example": "UTC" },
+                    "days": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["day", "count"],
+                        "properties": {
+                          "day": { "type": "string", "format": "date", "description": "UTC calendar day (YYYY-MM-DD)" },
+                          "count": { "type": "integer", "format": "int64" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
