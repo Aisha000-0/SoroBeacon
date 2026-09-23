@@ -45,8 +45,6 @@ The README has worked examples for channels and rules.
 
 ## Good first issues
 
-- Encrypt `channels.config` at rest (design note: an envelope-encryption
-  interface in `internal/store` so the column stays opaque JSON).
 - API authentication (token middleware on `/api/v1`).
 - New rule types: absence-of-event ("no heartbeat for N minutes"),
   frequency ("more than N matches in M minutes").

@@ -68,7 +68,7 @@ The dispatcher fans each new alert out to the monitor's enabled channels. Per ch
 | --- | --- |
 | `monitors` | Name, contract IDs (jsonb), enabled flag |
 | `rules` | Type + params (jsonb) per monitor |
-| `channels` | Type + config (jsonb, holds secrets), enabled flag |
+| `channels` | Type + config (jsonb, holds secrets; encrypted at rest when `CONFIG_ENCRYPTION_KEY` is set), enabled flag |
 | `monitor_channels` | Which channels a monitor alerts to |
 | `alerts` | One row per rule match; unique on `(rule_id, event_id)` |
 | `delivery_attempts` | Every delivery try with status and response snippet |
@@ -79,4 +79,4 @@ Migrations are embedded in the binary and applied automatically at startup (gola
 ## Trust boundaries
 
 * Everything behind `HTTP_ADDR` (API + dashboard) is **unauthenticated** in the MVP.
-* Channel secrets are redacted from logs, API responses, error messages, and delivery snippets — but stored **unencrypted** in Postgres (encryption at rest is a designed-for contributor issue).
+* Channel secrets are redacted from logs, API responses, error messages, and delivery snippets. When `CONFIG_ENCRYPTION_KEY` is set they are also encrypted at rest, so a database or backup compromise yields ciphertext rather than credentials; when it is unset they are stored as plaintext.

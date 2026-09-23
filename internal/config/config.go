@@ -2,6 +2,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"math"
@@ -52,6 +53,11 @@ type Config struct {
 	// DatabaseMaxConnIdleTime is the pgx pool MaxConnIdleTime. Zero
 	// means use the driver default (DATABASE_MAX_CONN_IDLE_TIME).
 	DatabaseMaxConnIdleTime time.Duration
+	// ConfigEncryptionKey is the decoded AES-GCM key used to encrypt
+	// channels.config at rest (CONFIG_ENCRYPTION_KEY, base64). Nil means
+	// encryption is disabled and configs stay plaintext, preserving the
+	// behaviour of deployments that have not set the variable.
+	ConfigEncryptionKey []byte
 	// PollInterval is how often the poller asks the RPC for new events.
 	PollInterval time.Duration
 	// SourceMode selects where events come from: "rpc" (standalone,
@@ -249,6 +255,11 @@ func Load() (Config, error) {
 	cfg.DatabaseMinConns = minConns
 	cfg.DatabaseMaxConnLifetime = maxLifetime
 	cfg.DatabaseMaxConnIdleTime = maxIdle
+	key, err := parseEncryptionKey(os.Getenv("CONFIG_ENCRYPTION_KEY"))
+	if err != nil {
+		return cfg, err
+	}
+	cfg.ConfigEncryptionKey = key
 	if v := os.Getenv("ALERT_RETENTION"); v != "" {
 		d, err := ParseRetention(v)
 		if err != nil {
@@ -295,6 +306,7 @@ func (c Config) LogAttrs() []slog.Attr {
 		slog.String("rpc_url", c.RPCURL),
 		slog.String("sorotrail_url", c.SoroTrailURL),
 		slog.String("cors_allowed_origins", strings.Join(c.CORSAllowedOrigins, ",")),
+		slog.Bool("config_encryption_enabled", len(c.ConfigEncryptionKey) > 0),
 	}
 }
 
@@ -337,6 +349,32 @@ func ParseRetention(s string) (time.Duration, error) {
 		return 0, fmt.Errorf("must be a positive duration")
 	}
 	return d, nil
+}
+
+// parseEncryptionKey decodes CONFIG_ENCRYPTION_KEY, a base64-encoded AES-GCM
+// key. Empty means encryption is disabled. The key is checked here — before
+// the store is built — so a typo fails startup rather than the first channel
+// write. Errors name the variable and the allowed lengths but never echo the
+// key itself.
+func parseEncryptionKey(raw string) ([]byte, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	key, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		// Accept an unpadded key too; operators trimming the trailing '='
+		// from `openssl rand -base64 32` is a common mistake.
+		key, err = base64.RawStdEncoding.DecodeString(strings.TrimRight(raw, "="))
+		if err != nil {
+			return nil, fmt.Errorf("invalid CONFIG_ENCRYPTION_KEY: must be standard base64 (e.g. `openssl rand -base64 32`)")
+		}
+	}
+	switch len(key) {
+	case 16, 24, 32:
+		return key, nil
+	default:
+		return nil, fmt.Errorf("invalid CONFIG_ENCRYPTION_KEY: must decode to 16, 24 or 32 bytes for AES-GCM (got %d bytes)", len(key))
+	}
 }
 
 const databaseURLExample = "postgres://user:pass@localhost:5432/dbname?sslmode=disable"

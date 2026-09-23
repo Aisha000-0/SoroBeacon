@@ -123,7 +123,8 @@ build date baked in at compile time. Every response carries an
 
 Channel secrets (webhook URLs, bot tokens, SMTP credentials) live in each
 channel's `config` JSON in the database. They are never logged and never
-returned by the API. Encrypting them at rest is an open contributor issue.
+returned by the API. Set `CONFIG_ENCRYPTION_KEY` to encrypt them at rest;
+see the [configuration guide](docs/getting-started/configuration.md#encrypting-channel-config-at-rest).
 
 > ⚠️ The API and dashboard have **no authentication** in the MVP. Run them on
 > a trusted network or behind a reverse proxy that adds auth.
@@ -310,7 +311,6 @@ Decoded events use a small value vocabulary (`nil`, `bool`, `string`,
 
 ### Open contributor issues (by design)
 
-- Secret encryption at rest for `channels.config`
 - API authentication
 - More rule types (rate/frequency, absence-of-event, aggregation windows)
 - More channels (Matrix, PagerDuty, ntfy, ...)

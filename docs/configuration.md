@@ -19,6 +19,7 @@ and this page should be updated.
 | Variable | Secret? | Notes |
 | --- | --- | --- |
 | `DATABASE_URL` | **yes** | Connection string often embeds a password. Mode `0600` on disk; never commit a filled `.env`. |
+| `CONFIG_ENCRYPTION_KEY` | **yes** | Base64 AES-GCM key that encrypts channel `config` at rest. Losing it makes encrypted configs unrecoverable — back it up with the database. |
 | `NETWORK_PASSPHRASE` | no (public nets) | SDF passphrases are public. For `NETWORK=custom` it identifies a private network — treat it as operational config, not a credential. |
 | `RPC_URL` / `SOROTRAIL_URL` | maybe | A URL is not a password, but provider URLs sometimes embed tokens in the path or query. Do not commit those. |
 | `CORS_ALLOWED_ORIGINS` | no | An allow-list, not a credential. Think hard before allowing a third-party origin: the API is unauthenticated. |
@@ -26,13 +27,27 @@ and this page should be updated.
 
 Channel `config` in the database is the place webhook URLs, bot tokens
 and SMTP passwords live. Do not copy those into environment variables
-or into this file.
+or into this file. `CONFIG_ENCRYPTION_KEY` is the key that encrypts that
+column; see [Channel config encryption](#channel-config-encryption).
 
 ## Database
 
 | Variable | Type | Default | Required | What it does |
 | --- | --- | --- | --- | --- |
 | `DATABASE_URL` | URL string | _(none)_ | **required** | Postgres connection string in pgx form, e.g. `postgres://user:pass@host:5432/sorobeacon?sslmode=disable`. Load fails if it is empty. |
+
+## Channel config encryption
+
+| Variable | Type | Default | Required | What it does |
+| --- | --- | --- | --- | --- |
+| `CONFIG_ENCRYPTION_KEY` | base64 string | empty (encryption disabled) | optional | AES-GCM key used to encrypt each channel's `config` at rest. Must decode to 16, 24 or 32 bytes (32, i.e. AES-256, recommended); validated at startup so a bad value fails boot, not the first write. Generate with `openssl rand -base64 32`. Unset stores config as plaintext and logs one startup warning. |
+
+When set, new and updated channel rows hold a JSON envelope
+(`{"sorobeacon_config":"v1:…"}`). Rows written before the key was
+set stay plaintext, keep working, and are re-encrypted lazily on their next
+write. Losing the key makes encrypted rows undecryptable: reads fail with an
+error naming the channel and never echo ciphertext or key material. Back the
+key up alongside your database backups.
 
 ## RPC / event source
 

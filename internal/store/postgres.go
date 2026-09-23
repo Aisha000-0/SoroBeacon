@@ -25,9 +25,21 @@ type PoolSettings struct {
 // Postgres implements Store on top of a pgx connection pool.
 type Postgres struct {
 	pool *pgxpool.Pool
+	// cipher encrypts and decrypts channels.config at rest. Nil (the
+	// default) keeps the pre-encryption plaintext behaviour.
+	cipher ConfigCipher
 }
 
 var _ Store = (*Postgres)(nil)
+
+// WithConfigCipher sets the cipher used to encrypt Channel.Config at rest
+// and returns the store for chaining. Call it before serving traffic; a nil
+// cipher (or never calling it) stores config as plaintext. With no cipher,
+// existing plaintext rows keep working unchanged.
+func (p *Postgres) WithConfigCipher(c ConfigCipher) *Postgres {
+	p.cipher = c
+	return p
+}
 
 // NewPostgres connects to databaseURL and verifies the connection.
 // Call Migrate before using the store on a fresh database. Pass a zero
@@ -467,10 +479,14 @@ func (p *Postgres) DeleteRule(ctx context.Context, id int64) error {
 // --- channels ---
 
 func (p *Postgres) CreateChannel(ctx context.Context, c *Channel) error {
+	config, err := p.configForWrite(c.ID, c.Name, c.Config)
+	if err != nil {
+		return err
+	}
 	return p.pool.QueryRow(ctx,
 		`INSERT INTO channels (name, type, config, enabled) VALUES ($1, $2, $3, $4)
 		 RETURNING id, created_at`,
-		c.Name, c.Type, jsonOrEmpty(c.Config), c.Enabled,
+		c.Name, c.Type, config, c.Enabled,
 	).Scan(&c.ID, &c.CreatedAt)
 }
 
@@ -481,6 +497,9 @@ func (p *Postgres) GetChannel(ctx context.Context, id int64) (*Channel, error) {
 	).Scan(&c.ID, &c.Name, &c.Type, &c.Config, &c.Enabled, &c.CreatedAt)
 	if err != nil {
 		return nil, mapErr(err)
+	}
+	if err := p.decryptChannel(&c); err != nil {
+		return nil, err
 	}
 	return &c, nil
 }
@@ -495,7 +514,7 @@ func (p *Postgres) ListChannels(ctx context.Context, enabledOnly bool) ([]Channe
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, scanChannel)
+	return pgx.CollectRows(rows, p.scanChannel)
 }
 
 func (p *Postgres) ListChannelsPage(ctx context.Context, f ListFilter) ([]Channel, error) {
@@ -521,13 +540,17 @@ func (p *Postgres) ListChannelsPage(ctx context.Context, f ListFilter) ([]Channe
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, scanChannel)
+	return pgx.CollectRows(rows, p.scanChannel)
 }
 
 func (p *Postgres) UpdateChannel(ctx context.Context, c *Channel) error {
+	config, err := p.configForWrite(c.ID, c.Name, c.Config)
+	if err != nil {
+		return err
+	}
 	tag, err := p.pool.Exec(ctx,
 		`UPDATE channels SET name = $2, type = $3, config = $4, enabled = $5 WHERE id = $1`,
-		c.ID, c.Name, c.Type, jsonOrEmpty(c.Config), c.Enabled)
+		c.ID, c.Name, c.Type, config, c.Enabled)
 	if err != nil {
 		return err
 	}
@@ -551,13 +574,20 @@ func (p *Postgres) ListChannelsForMonitor(ctx context.Context, monitorID int64) 
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, scanChannel)
+	return pgx.CollectRows(rows, p.scanChannel)
 }
 
-func scanChannel(row pgx.CollectableRow) (Channel, error) {
+// scanChannel reads one channels row and decrypts its config, so every
+// caller up the stack (API, dashboard, dispatcher) sees plaintext.
+func (p *Postgres) scanChannel(row pgx.CollectableRow) (Channel, error) {
 	var c Channel
-	err := row.Scan(&c.ID, &c.Name, &c.Type, &c.Config, &c.Enabled, &c.CreatedAt)
-	return c, err
+	if err := row.Scan(&c.ID, &c.Name, &c.Type, &c.Config, &c.Enabled, &c.CreatedAt); err != nil {
+		return c, err
+	}
+	if err := p.decryptChannel(&c); err != nil {
+		return c, err
+	}
+	return c, nil
 }
 
 // --- alerts ---

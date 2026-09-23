@@ -42,6 +42,26 @@ func TestLogStartupHealth_Healthy(t *testing.T) {
 	}
 }
 
+func TestWarnIfChannelConfigUnencrypted(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+
+	warnIfChannelConfigUnencrypted(log, nil)
+	out := buf.String()
+	if !strings.Contains(out, "level=WARN") {
+		t.Fatalf("expected a warning log line, got: %s", out)
+	}
+	if !strings.Contains(out, "CONFIG_ENCRYPTION_KEY") {
+		t.Fatalf("expected the warning to name CONFIG_ENCRYPTION_KEY, got: %s", out)
+	}
+
+	buf.Reset()
+	warnIfChannelConfigUnencrypted(log, []byte("0123456789abcdef0123456789abcdef"))
+	if buf.Len() != 0 {
+		t.Fatalf("a configured key must not warn, got: %s", buf.String())
+	}
+}
+
 func TestLogStartupHealth_Unreachable(t *testing.T) {
 	var buf bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&buf, nil))

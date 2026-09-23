@@ -14,6 +14,7 @@ All configuration comes from environment variables. `.env.example` in the repo i
 | `DATABASE_MIN_CONNS` | pgx default | Minimum connections in the pool. `0` or unset leaves the driver default. Rejected when greater than `DATABASE_MAX_CONNS` if both are set. |
 | `DATABASE_MAX_CONN_LIFETIME` | pgx default | How long a connection may be reused. Go duration (`1h`, `30m`). `0` or unset leaves the driver default. |
 | `DATABASE_MAX_CONN_IDLE_TIME` | pgx default | How long an idle connection is kept. Go duration. `0` or unset leaves the driver default. |
+| `CONFIG_ENCRYPTION_KEY` | unset (encryption off) | Base64 AES-GCM key that encrypts each channel's `config` at rest. Must decode to 16, 24 or 32 bytes (32 recommended); validated at startup. Generate with `openssl rand -base64 32`. Unset keeps plaintext and logs one startup warning. |
 | `POLL_INTERVAL` | `5s` | How often the poller calls `getEvents`. Minimum `1s`. |
 | `HTTP_ADDR` | `:8080` | Listen address (`host:port`) for the API and dashboard. Empty host means all interfaces. Validated at load. |
 | `MONITOR_SILENT_AFTER` | `24h` | How long since `last_matched_at` (event ledger close time) before the monitors list marks a monitor silent. |
@@ -26,8 +27,24 @@ All configuration comes from environment variables. `.env.example` in the repo i
 
 Channel secrets — webhook URLs, bot tokens, SMTP credentials — are stored in each channel's `config` JSON in Postgres, **not** in environment variables. SoroBeacon never logs them and never returns them from the API or renders them in the dashboard.
 
+### Encrypting channel config at rest
+
+Set `CONFIG_ENCRYPTION_KEY` to a base64-encoded AES-GCM key and SoroBeacon encrypts each channel's `config` before it is written and decrypts it transparently on read. Raw rows, backups and `pg_dump` output then hold an opaque JSON envelope (`{"sorobeacon_config":"v1:…"}`) instead of usable credentials.
+
+```sh
+openssl rand -base64 32
+```
+
+The key is a secret. Keep it with your other credentials (a systemd `EnvironmentFile=`, a secret manager, …) and **back it up next to your database backups**. A wrong length or non-base64 value fails startup, not the first channel write. With the key set, the startup log line reports `config_encryption_enabled=true`.
+
+**Existing rows are not rewritten automatically.** Rows written before the key was set stay plaintext; they keep working and are re-encrypted lazily the next time the channel is updated (through the dashboard or the API). A read never fails just because a row is legacy plaintext, so enabling encryption on a running deployment does not brick it.
+
+**Unset key ⇒ plaintext, with a warning.** With no key, behaviour is unchanged (config stored as plaintext) and SoroBeacon logs one warning at startup so the operator knows. This keeps upgrades safe by default.
+
+**If the key is lost**, rows encrypted with it cannot be recovered — AES-GCM decryption is bound to the key. Reads fail with an error naming the channel (never echoing ciphertext or key material), which means the channel list is unavailable until the key is restored; the only recovery without the key is to delete and recreate the affected channels. **If the key is rotated**, keep the old key active while each channel is re-saved so its row is re-encrypted under the new one; swapping the key before rows are rewritten makes them undecryptable.
+
 {% hint style="warning" %}
-The MVP has **no API authentication** and stores channel secrets **unencrypted** in the database. Run SoroBeacon on a trusted network (or behind an authenticating reverse proxy) and restrict database access. Both hardening items are open contributor issues with designed-in extension points.
+The MVP has **no API authentication**. Encrypting config at rest only protects data at rest — run SoroBeacon on a trusted network (or behind an authenticating reverse proxy) and restrict database access. API authentication remains an open contributor issue.
 {% endhint %}
 
 ## Behavior under errors

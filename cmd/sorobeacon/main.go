@@ -44,6 +44,19 @@ func run() error {
 	slog.SetDefault(log)
 	log.LogAttrs(context.Background(), slog.LevelInfo, "configuration loaded", cfg.LogAttrs()...)
 
+	// Channel config holds secrets; encrypt it at rest when a key is set.
+	// The key is validated here so a malformed value fails startup rather
+	// than the first channel write. With no key the store keeps storing
+	// plaintext (unchanged behaviour) and we warn once below.
+	var configCipher store.ConfigCipher
+	if len(cfg.ConfigEncryptionKey) > 0 {
+		configCipher, err = store.NewAESGCMCipher(cfg.ConfigEncryptionKey)
+		if err != nil {
+			return err
+		}
+	}
+	warnIfChannelConfigUnencrypted(log, cfg.ConfigEncryptionKey)
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -60,6 +73,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	st.WithConfigCipher(configCipher)
 	defer st.Close()
 	log.Info("database ready")
 
@@ -162,6 +176,18 @@ func run() error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return httpSrv.Shutdown(shutdownCtx)
+}
+
+// warnIfChannelConfigUnencrypted logs one warning at startup when
+// CONFIG_ENCRYPTION_KEY is unset. Channel configs still work as plaintext, so
+// this is a warning and not a startup failure — an upgrade must never brick a
+// running deployment — but the operator should know that anyone with
+// database or backup access can read the webhook URLs, bot tokens and SMTP
+// credentials those configs hold.
+func warnIfChannelConfigUnencrypted(log *slog.Logger, key []byte) {
+	if len(key) == 0 {
+		log.Warn("channel config encryption is disabled; set CONFIG_ENCRYPTION_KEY to encrypt webhook URLs, bot tokens and SMTP credentials at rest")
+	}
 }
 
 // startupHealthTimeout bounds the one-off health check logged at startup,
