@@ -104,6 +104,13 @@ type DecodedEvent struct {
 	Topics []any
 	// Value is the decoded event data ScVal.
 	Value any
+	// Fields holds the same event data addressed by name when a contract
+	// spec was available (see SpecDecoder); it is nil otherwise, and rules
+	// that predate spec-aware decoding can ignore it. Both topic-located and
+	// data-located parameters appear here, keyed by the spec's parameter
+	// names, so value_threshold's value_path can say "amount" or "from"
+	// instead of counting topic positions.
+	Fields map[string]any
 }
 
 // EventName returns the first topic if it is a string (the conventional

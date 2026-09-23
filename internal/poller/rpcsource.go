@@ -93,7 +93,7 @@ func (s *RPCSource) FetchEvents(ctx context.Context, startLedger uint32, contrac
 
 	page := FetchPage{LatestLedger: res.LatestLedger}
 	for i := range res.Events {
-		decoded, err := s.decoder.DecodeEvent(res.Events[i])
+		decoded, err := s.decoder.DecodeEvent(ctx, res.Events[i])
 		if err != nil {
 			// A single undecodable event must not stall the cycle; the
 			// source drops it and the poller keeps going. Decoding errors

@@ -260,7 +260,7 @@ func (p *Poller) handleEvent(ctx context.Context, decoded *stellar.DecodedEvent,
 
 // fireAlert persists a deduped alert and hands it to the dispatcher.
 func (p *Poller) fireAlert(ctx context.Context, m store.Monitor, rule store.Rule, ev *stellar.DecodedEvent) {
-	payload, err := json.Marshal(map[string]any{
+	body := map[string]any{
 		"contract_id":      ev.ContractID,
 		"event_name":       ev.EventName(),
 		"ledger":           ev.Ledger,
@@ -268,7 +268,13 @@ func (p *Poller) fireAlert(ctx context.Context, m store.Monitor, rule store.Rule
 		"tx_hash":          ev.TxHash,
 		"topics":           ev.Topics,
 		"value":            ev.Value,
-	})
+	}
+	// Named fields are only present when the contract's spec was available;
+	// without one the payload is byte-for-byte what it has always been.
+	if ev.Fields != nil {
+		body["fields"] = ev.Fields
+	}
+	payload, err := json.Marshal(body)
 	if err != nil {
 		p.log.Error("marshal alert payload", "event_id", ev.ID, "err", err)
 		return

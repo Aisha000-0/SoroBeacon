@@ -89,7 +89,11 @@ func run() error {
 		}
 		log.Info("network verified", "network", cfg.Network.Name, "rpc_url", cfg.RPCURL)
 
-		src = poller.NewRPCSource(rpc, stellar.DefaultDecoder{})
+		// Contract specs are fetched lazily per contract and cached, so
+		// events from a contract with a spec arrive with named fields while
+		// every other contract decodes exactly as before.
+		decoder := stellar.NewSpecDecoder(stellar.DefaultDecoder{}, stellar.NewRPCSpecSource(rpc), log)
+		src = poller.NewRPCSource(rpc, decoder)
 		health = rpc
 	}
 	logStartupHealth(ctx, log, health)

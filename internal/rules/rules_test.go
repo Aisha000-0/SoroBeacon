@@ -182,6 +182,29 @@ func TestValueThreshold(t *testing.T) {
 			want:   false,
 		},
 		{
+			// With a contract spec, value_path addresses the spec's named
+			// fields rather than the raw positional value.
+			name:   "value_path addresses named spec fields",
+			params: `{"comparison": "gt", "threshold": 100, "value_path": "amount"}`,
+			event: &stellar.DecodedEvent{
+				Topics: []any{"transfer", "GFROM", "GTO"},
+				Value:  map[string]any{"amount": big.NewInt(5)},
+				Fields: map[string]any{"from": "GFROM", "to": "GTO", "amount": big.NewInt(500)},
+			},
+			want: true,
+		},
+		{
+			// A named topic-located parameter is addressable too.
+			name:   "value_path addresses a named topic parameter",
+			params: `{"comparison": "gte", "threshold": 500, "value_path": "amount"}`,
+			event: &stellar.DecodedEvent{
+				Topics: []any{"transfer", "GFROM", "GTO"},
+				Value:  big.NewInt(1),
+				Fields: map[string]any{"from": "GFROM", "to": "GTO", "amount": big.NewInt(500)},
+			},
+			want: true,
+		},
+		{
 			name:    "invalid comparison errors",
 			params:  `{"comparison": "wat", "threshold": 1}`,
 			event:   transferEvent(50),

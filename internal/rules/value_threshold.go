@@ -76,7 +76,14 @@ func (ValueThreshold) Evaluate(_ context.Context, ev *stellar.DecodedEvent, para
 	if p.EventName != "" && ev.EventName() != p.EventName {
 		return false, nil
 	}
-	raw, found := stellar.Lookup(ev.Value, p.ValuePath)
+	// When the contract's spec was available, the event carries named fields
+	// and value_path addresses those; otherwise it keeps addressing the raw
+	// positional value, exactly as before.
+	root := ev.Value
+	if ev.Fields != nil {
+		root = ev.Fields
+	}
+	raw, found := stellar.Lookup(root, p.ValuePath)
 	if !found {
 		return false, nil
 	}
