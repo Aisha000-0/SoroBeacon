@@ -649,10 +649,10 @@ func (p *Postgres) CreateAlert(ctx context.Context, a *Alert) (AlertOutcome, err
 	}
 
 	err = tx.QueryRow(ctx,
-		`INSERT INTO alerts (monitor_id, rule_id, event_id, payload) VALUES ($1, $2, $3, $4)
+		`INSERT INTO alerts (monitor_id, rule_id, event_id, payload, backfilled) VALUES ($1, $2, $3, $4, $5)
 		 ON CONFLICT (rule_id, event_id) DO NOTHING
 		 RETURNING id, created_at`,
-		a.MonitorID, a.RuleID, a.EventID, jsonOrEmpty(a.Payload),
+		a.MonitorID, a.RuleID, a.EventID, jsonOrEmpty(a.Payload), a.Backfilled,
 	).Scan(&a.ID, &a.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AlertDuplicate, nil // duplicate (rule_id, event_id): deduped
@@ -689,8 +689,8 @@ func (p *Postgres) CreateAlert(ctx context.Context, a *Alert) (AlertOutcome, err
 func (p *Postgres) GetAlert(ctx context.Context, id int64) (*Alert, error) {
 	var a Alert
 	err := p.pool.QueryRow(ctx,
-		`SELECT id, monitor_id, rule_id, event_id, payload, created_at FROM alerts WHERE id = $1`, id,
-	).Scan(&a.ID, &a.MonitorID, &a.RuleID, &a.EventID, &a.Payload, &a.CreatedAt)
+		`SELECT id, monitor_id, rule_id, event_id, payload, created_at, backfilled FROM alerts WHERE id = $1`, id,
+	).Scan(&a.ID, &a.MonitorID, &a.RuleID, &a.EventID, &a.Payload, &a.CreatedAt, &a.Backfilled)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -707,7 +707,7 @@ func alertSort(s string) string {
 }
 
 func (p *Postgres) ListAlerts(ctx context.Context, f AlertFilter) ([]Alert, error) {
-	q := `SELECT id, monitor_id, rule_id, event_id, payload, created_at FROM alerts WHERE TRUE`
+	q := `SELECT id, monitor_id, rule_id, event_id, payload, created_at, backfilled FROM alerts WHERE TRUE`
 	args := []any{}
 	n := 0
 	arg := func(v any) string {
@@ -756,7 +756,7 @@ func (p *Postgres) ListAlerts(ctx context.Context, f AlertFilter) ([]Alert, erro
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (Alert, error) {
 		var a Alert
-		err := row.Scan(&a.ID, &a.MonitorID, &a.RuleID, &a.EventID, &a.Payload, &a.CreatedAt)
+		err := row.Scan(&a.ID, &a.MonitorID, &a.RuleID, &a.EventID, &a.Payload, &a.CreatedAt, &a.Backfilled)
 		return a, err
 	})
 }
@@ -811,6 +811,45 @@ func (p *Postgres) SetIngestState(ctx context.Context, s IngestState) error {
 		`UPDATE ingest_state SET last_ledger = $1, last_cursor = $2, updated_at = now() WHERE id = 1`,
 		int64(s.LastLedger), s.LastCursor)
 	return err
+}
+
+// --- backfills ---
+
+func (p *Postgres) GetBackfill(ctx context.Context, monitorID int64) (Backfill, error) {
+	var b Backfill
+	var fromLedger, toLedger, nextLedger int64
+	err := p.pool.QueryRow(ctx,
+		`SELECT monitor_id, from_ledger, to_ledger, next_ledger, cursor, deliver, complete, updated_at
+		   FROM backfills WHERE monitor_id = $1`, monitorID,
+	).Scan(&b.MonitorID, &fromLedger, &toLedger, &nextLedger, &b.Cursor, &b.Deliver, &b.Complete, &b.UpdatedAt)
+	if err != nil {
+		return b, mapErr(err)
+	}
+	b.FromLedger = uint32(fromLedger)
+	b.ToLedger = uint32(toLedger)
+	b.NextLedger = uint32(nextLedger)
+	return b, nil
+}
+
+// UpsertBackfill writes the run's resume point, replacing any previous row for
+// the monitor. One row per monitor is what makes "resume where it stopped"
+// unambiguous.
+func (p *Postgres) UpsertBackfill(ctx context.Context, b *Backfill) error {
+	return p.pool.QueryRow(ctx,
+		`INSERT INTO backfills (monitor_id, from_ledger, to_ledger, next_ledger, cursor, deliver, complete)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		 ON CONFLICT (monitor_id) DO UPDATE SET
+		     from_ledger = EXCLUDED.from_ledger,
+		     to_ledger   = EXCLUDED.to_ledger,
+		     next_ledger = EXCLUDED.next_ledger,
+		     cursor      = EXCLUDED.cursor,
+		     deliver     = EXCLUDED.deliver,
+		     complete    = EXCLUDED.complete,
+		     updated_at  = now()
+		 RETURNING updated_at`,
+		b.MonitorID, int64(b.FromLedger), int64(b.ToLedger), int64(b.NextLedger),
+		b.Cursor, b.Deliver, b.Complete,
+	).Scan(&b.UpdatedAt)
 }
 
 // --- stats ---
