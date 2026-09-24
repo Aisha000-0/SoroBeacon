@@ -26,6 +26,7 @@
 * [Telegram](channels/telegram.md)
 * [Email (SMTP)](channels/email.md)
 * [Generic webhook](channels/webhook.md)
+* [Message templates](channels/templates.md)
 
 ## 🛠️ Reference
 

@@ -19,6 +19,10 @@ curl -s -X POST localhost:8080/api/v1/channels -d '{
 | `url` | yes | Endpoint to POST alerts to. Treated as a secret (it often embeds tokens). |
 | `secret` | yes | HMAC key used to sign every request. |
 
+The generic webhook sends structured JSON rather than the plain-text summary,
+so it has no [`template`](templates.md) option — reshape the JSON in your
+receiver instead.
+
 ## Payload
 
 ```json

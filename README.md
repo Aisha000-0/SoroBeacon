@@ -239,6 +239,10 @@ curl -s -X POST localhost:8080/api/v1/channels/1/test
 Generic webhook deliveries carry an `X-SoroBeacon-Signature` header: the hex
 HMAC-SHA256 of the request body under your `secret`.
 
+Discord, Slack, Telegram and email configs accept an optional `template` (a Go
+`text/template` over the alert fields) to override the message; see
+[docs/channels/templates.md](docs/channels/templates.md).
+
 ### Alerts, health, stats
 
 ```sh
