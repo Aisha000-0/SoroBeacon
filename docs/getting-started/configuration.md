@@ -8,6 +8,7 @@ All configuration comes from environment variables. `.env.example` in the repo i
 | `SOROTRAIL_URL` | — | SoroTrail indexer base URL. Required when `SOURCE_MODE=sorotrail`. |
 | `NETWORK` | `testnet` | `testnet` \| `mainnet` \| `futurenet` \| `custom`. Selects the network preset (RPC endpoint + passphrase). |
 | `RPC_URL` | per `NETWORK` | Stellar RPC endpoint (JSON-RPC 2.0). Overrides the preset. |
+| `RPC_URLS` | — (uses `RPC_URL`) | Ordered, comma-separated RPC endpoints to fail over between. Takes priority over `RPC_URL` when set. Every endpoint must be on the configured network or startup fails. |
 | `NETWORK_PASSPHRASE` | per `NETWORK` | Overrides the preset passphrase. Required with `NETWORK=custom`. |
 | `DATABASE_URL` | _(required)_ | Postgres URL (`postgres` or `postgresql` scheme), e.g. `postgres://user:pass@host:5432/sorobeacon?sslmode=disable`. Validated at load; errors name the variable and never echo the password. |
 | `DATABASE_MAX_CONNS` | pgx default | Maximum connections in the pool. `0` or unset leaves the driver default. |
