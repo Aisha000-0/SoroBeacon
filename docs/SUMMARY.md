@@ -17,6 +17,7 @@
 
 ## 📏 Rule reference
 
+* [Params reference](rules/params.md)
 * [event\_emitted](rules/event-emitted.md)
 * [value\_threshold](rules/value-threshold.md)
 * [token\_event](rules/token-event.md)
@@ -25,6 +26,7 @@
 
 ## 📣 Channel reference
 
+* [Choosing between them](channels/choosing.md)
 * [Discord](channels/discord.md)
 * [Slack](channels/slack.md)
 * [Telegram](channels/telegram.md)
@@ -36,6 +38,7 @@
 
 ## 📏 Operations
 
+* [Health and readiness endpoints](operations/health-checks.md)
 * [Backing up and restoring the database](operations/backup-restore.md)
 * [Capacity and scaling](operations/scaling.md)
 * [Poll priority, reorgs, retention and archiving](operations/retention-and-reorg.md)
@@ -48,5 +51,6 @@
 
 ## 🔌 Contributing
 
+* [A code tour: following one event](contributing/code-tour.md)
 * [Extending SoroBeacon](contributing/extending.md)
 * [Development guide](contributing/development.md)
