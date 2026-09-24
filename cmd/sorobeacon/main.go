@@ -124,6 +124,21 @@ func run() error {
 
 	m := metrics.New()
 	registry := rules.NewRegistry()
+	// The frequency rule keeps a rolling window per rule in memory. Rebuild it
+	// from the alerts already stored so a restart does not forget that the rule
+	// fired and alert again for the same episode.
+	registry.Register(rules.TypeFrequencyThreshold, rules.NewFrequencyThreshold().WithMatchLog(
+		rules.MatchLogFunc(func(ctx context.Context, ruleID int64, since time.Time) ([]rules.MatchRecord, error) {
+			alerts, err := st.ListAlerts(ctx, store.AlertFilter{RuleID: ruleID, From: since, Sort: "created_at_asc", Limit: 1000})
+			if err != nil {
+				return nil, err
+			}
+			records := make([]rules.MatchRecord, 0, len(alerts))
+			for _, a := range alerts {
+				records = append(records, rules.MatchRecord{At: a.CreatedAt, EventID: a.EventID})
+			}
+			return records, nil
+		})))
 	factory := notify.DefaultFactory()
 	dispatcher := notify.NewDispatcher(st, factory, log).WithMetrics(m)
 	p := poller.New(src, st, registry, dispatcher, cfg.PollInterval, log).WithMetrics(m)

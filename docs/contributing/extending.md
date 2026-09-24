@@ -66,7 +66,11 @@ Register it in `NewRegistry`:
 r.Register("absence", Absence{})
 ```
 
-Evaluators must be stateless and concurrency-safe. Decoded events use a small value vocabulary (`nil`, `bool`, `string`, `*big.Int`, `[]byte`, `[]any`, `map[string]any`); build on the helpers in `internal/stellar`:
+Evaluators must be stateless and concurrency-safe, with one exception:
+`frequency_threshold` keeps a rolling window per rule, keyed by the rule id the
+poller puts in the context (`rules.WithRuleID`) and rebuilt from the `alerts`
+table after a restart. An evaluator that genuinely needs state should follow the
+same pattern. Decoded events use a small value vocabulary (`nil`, `bool`, `string`, `*big.Int`, `[]byte`, `[]any`, `map[string]any`); build on the helpers in `internal/stellar`:
 
 * `Canon(v)` — canonical string rendering for equality comparisons
 * `ToBigFloat(v)` — arbitrary-precision numeric coercion
@@ -86,6 +90,6 @@ specs live somewhere else, such as an indexer or a local cache.
 
 ## Wanted (open by design)
 
-* Rule types: absence-of-event ("no heartbeat for N minutes"), frequency ("more than N matches in M minutes")
-* Channels: Matrix, PagerDuty, ntfy.sh
+* Rule types: absence-of-event ("no heartbeat for N minutes")
+* Channels: ntfy.sh
 * A richer dashboard

@@ -20,6 +20,7 @@
 * [event\_emitted](rules/event-emitted.md)
 * [value\_threshold](rules/value-threshold.md)
 * [token\_event](rules/token-event.md)
+* [frequency\_threshold](rules/frequency-threshold.md)
 * [Rule cooldown](rules/cooldown.md)
 
 ## 📣 Channel reference
@@ -29,6 +30,8 @@
 * [Telegram](channels/telegram.md)
 * [Email (SMTP)](channels/email.md)
 * [Generic webhook](channels/webhook.md)
+* [Matrix](channels/matrix.md)
+* [PagerDuty](channels/pagerduty.md)
 * [Message templates](channels/templates.md)
 
 ## 📏 Operations

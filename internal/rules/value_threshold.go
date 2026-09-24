@@ -100,6 +100,17 @@ func (ValueThreshold) Evaluate(_ context.Context, ev *stellar.DecodedEvent, para
 	return match(value.Cmp(threshold)), nil
 }
 
+// EventNames reports the event name this rule is scoped to. value_threshold
+// may omit event_name, in which case it judges every event's value and cannot
+// be narrowed server-side.
+func (ValueThreshold) EventNames(params json.RawMessage) ([]string, bool) {
+	p, _, err := parseValueThreshold(params)
+	if err != nil || p.EventName == "" {
+		return nil, false
+	}
+	return []string{p.EventName}, true
+}
+
 func parseValueThreshold(params json.RawMessage) (valueThresholdParams, *big.Float, error) {
 	var p valueThresholdParams
 	if err := json.Unmarshal(params, &p); err != nil {

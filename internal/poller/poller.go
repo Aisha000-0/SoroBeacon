@@ -142,10 +142,21 @@ func (p *Poller) Poll(ctx context.Context) error {
 		return err
 	}
 
-	// Map each contract to the monitors watching it; dedupe contracts.
+	// Map each contract to the monitors watching it; dedupe contracts. Along
+	// the way, collect the event names its enabled rules require so the source
+	// can push a topic filter into getEvents instead of streaming events we
+	// would immediately discard. A contract is only narrowed when every rule
+	// watching it names a concrete event; otherwise it stays unfiltered.
 	byContract := map[string][]store.Monitor{}
 	var contracts []string
+	namesByContract := map[string]map[string]bool{}
+	unfilterable := map[string]bool{}
 	for _, m := range monitors {
+		ruleList, err := p.store.ListRules(ctx, m.ID, true)
+		if err != nil {
+			return err
+		}
+		names, ok := ruleEventNames(p.registry, ruleList)
 		for _, c := range m.ContractIDs {
 			// A single malformed ID makes the RPC reject the whole request,
 			// stalling ingestion for every monitor — skip, don't send.
@@ -157,10 +168,34 @@ func (p *Poller) Poll(ctx context.Context) error {
 				contracts = append(contracts, c)
 			}
 			byContract[c] = append(byContract[c], m)
+			if unfilterable[c] {
+				continue
+			}
+			if !ok {
+				unfilterable[c] = true
+				continue
+			}
+			if namesByContract[c] == nil {
+				namesByContract[c] = map[string]bool{}
+			}
+			for _, n := range names {
+				namesByContract[c][n] = true
+			}
 		}
 	}
 	if len(contracts) == 0 {
 		return nil
+	}
+
+	// Compile the derived filters into the watch list the source sees. A nil
+	// Topics is the safe default: no server-side narrowing.
+	watch := make([]Watch, 0, len(contracts))
+	for _, c := range contracts {
+		w := Watch{ContractID: c}
+		if !unfilterable[c] {
+			w.Topics = topicFiltersFor(sortedKeys(namesByContract[c]))
+		}
+		watch = append(watch, w)
 	}
 
 	state, err := p.store.GetIngestState(ctx)
@@ -187,7 +222,7 @@ func (p *Poller) Poll(ctx context.Context) error {
 	tip := uint32(0)        // max latestLedger across pages
 	cursor := ""
 	for {
-		page, err := p.source.FetchEvents(ctx, startLedger, contracts, cursor, stellar.DefaultEventsLimit)
+		page, err := p.source.FetchEvents(ctx, startLedger, watch, cursor, stellar.DefaultEventsLimit)
 		if err != nil {
 			return err
 		}
@@ -244,7 +279,10 @@ func (p *Poller) handleEvent(ctx context.Context, decoded *stellar.DecodedEvent,
 			continue
 		}
 		for _, rule := range ruleList {
-			matched, err := p.registry.Evaluate(ctx, rule.Type, decoded, rule.Params)
+			// The rule id rides in the context so a stateful evaluator (the
+			// frequency rule) can key its per-rule state.
+			ruleCtx := rules.WithRuleID(ctx, rule.ID)
+			matched, err := p.registry.Evaluate(ruleCtx, rule.Type, decoded, rule.Params)
 			if err != nil {
 				p.log.Warn("rule evaluation failed", "rule_id", rule.ID, "event_id", decoded.ID, "err", err)
 				continue
@@ -252,7 +290,13 @@ func (p *Poller) handleEvent(ctx context.Context, decoded *stellar.DecodedEvent,
 			if matched {
 				p.matched++
 				p.metrics.RecordAlert()
-				p.fireAlert(ctx, m, rule, decoded)
+				// An evaluator may override the dedup key (the frequency rule
+				// stores every crossing in one episode under the window start).
+				eventID := decoded.ID
+				if id := p.registry.AlertEventID(ruleCtx, rule.Type, decoded, rule.Params); id != "" {
+					eventID = id
+				}
+				p.fireAlert(ctx, m, rule, decoded, eventID)
 			}
 		}
 	}
@@ -261,7 +305,7 @@ func (p *Poller) handleEvent(ctx context.Context, decoded *stellar.DecodedEvent,
 // fireAlert persists a deduped, cooldown-gated alert and hands it to the
 // dispatcher. The store owns both gates so they hold across poller instances
 // and restarts; this function only reports the outcome.
-func (p *Poller) fireAlert(ctx context.Context, m store.Monitor, rule store.Rule, ev *stellar.DecodedEvent) {
+func (p *Poller) fireAlert(ctx context.Context, m store.Monitor, rule store.Rule, ev *stellar.DecodedEvent, eventID string) {
 	body := map[string]any{
 		"contract_id":      ev.ContractID,
 		"event_name":       ev.EventName(),
@@ -285,7 +329,7 @@ func (p *Poller) fireAlert(ctx context.Context, m store.Monitor, rule store.Rule
 	alert := &store.Alert{
 		MonitorID:      m.ID,
 		RuleID:         rule.ID,
-		EventID:        ev.ID,
+		EventID:        eventID,
 		Payload:        payload,
 		LedgerClosedAt: ev.LedgerClosedAt,
 		Cooldown:       ruleCooldown(rule),
@@ -317,7 +361,7 @@ func (p *Poller) fireAlert(ctx context.Context, m store.Monitor, rule store.Rule
 		MonitorName: m.Name,
 		RuleID:      rule.ID,
 		RuleType:    rule.Type,
-		EventID:     ev.ID,
+		EventID:     eventID,
 		ContractID:  ev.ContractID,
 		EventName:   ev.EventName(),
 		Ledger:      ev.Ledger,
@@ -338,18 +382,4 @@ func ruleCooldown(rule store.Rule) time.Duration {
 		return 0
 	}
 	return d
-}
-
-// buildFilters packs contract IDs into getEvents filters, respecting the
-// per-filter contractIds cap.
-func buildFilters(contracts []string) []stellar.EventFilter {
-	var out []stellar.EventFilter
-	for i := 0; i < len(contracts); i += stellar.MaxContractIDsPerFilter {
-		end := min(i+stellar.MaxContractIDsPerFilter, len(contracts))
-		out = append(out, stellar.EventFilter{
-			Type:        "contract",
-			ContractIDs: contracts[i:end],
-		})
-	}
-	return out
 }

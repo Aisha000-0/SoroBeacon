@@ -2,8 +2,9 @@
 
 **Monitoring and alerting for Soroban smart contracts.** Point SoroBeacon at
 one or more contracts on Stellar, define rules ("this event fired", "an
-emitted value crossed a threshold"), and get alerts on Discord, Slack,
-Telegram, email, or any webhook — with a small dashboard to manage monitors
+emitted value crossed a threshold", "more than N in M minutes"), and get alerts
+on Discord, Slack, Telegram, Matrix, PagerDuty, email, or any webhook — with a
+small dashboard to manage monitors
 and review alert history.
 
 Stellar has no good open-source way to watch a contract and get notified when
@@ -155,7 +156,7 @@ curl -s -X DELETE localhost:8080/api/v1/monitors/1
 
 ### Rules
 
-Three rule types ship:
+Four rule types ship:
 
 **`event_emitted`** — match on event name (the first topic, by Soroban
 convention) and/or exact topic values:
@@ -206,6 +207,28 @@ curl -s -X POST localhost:8080/api/v1/monitors/1/rules -d '{
 }'
 ```
 
+**`frequency_threshold`** — "more than N matching events within M minutes", a
+rolling-window aggregate for mint storms, drain attacks and oracle flapping.
+`count` is the positive threshold and `window` a Go duration; `event_name`
+scopes which events are counted. It fires once per threshold crossing and then
+stays quiet for one full window, so sustained activity alerts at most once per
+window rather than per event; the rolling window is rebuilt from stored alerts
+after a restart:
+
+```sh
+curl -s -X POST localhost:8080/api/v1/monitors/1/rules -d '{
+  "type": "frequency_threshold",
+  "params": {
+    "event_name": "transfer",
+    "count": 50,
+    "window": "5m"
+  }
+}'
+```
+
+See [docs/rules/frequency-threshold.md](docs/rules/frequency-threshold.md) for
+the re-arm semantics.
+
 Every rule type also accepts an optional `cooldown` (a Go duration string such
 as `"5m"`): the first match alerts, further matches in the window are counted
 and dropped, and the next alert reports `suppressed_since_last`. It survives a
@@ -220,8 +243,13 @@ curl -s -X DELETE localhost:8080/api/v1/monitors/1/rules/2
 
 ### Channels
 
-Five channel types ship with the MVP. `config` is validated on create/update
-and never returned in responses.
+Seven channel types ship with the MVP. `config` is validated on create/update
+and never returned in responses. Each has a page under
+[docs/channels/](docs/channels/):
+[Discord](docs/channels/discord.md), [Slack](docs/channels/slack.md),
+[Telegram](docs/channels/telegram.md), [Matrix](docs/channels/matrix.md),
+[PagerDuty](docs/channels/pagerduty.md), [Email](docs/channels/email.md) and
+the [generic webhook](docs/channels/webhook.md).
 
 ```sh
 # Discord
@@ -235,6 +263,9 @@ curl -s -X POST localhost:8080/api/v1/channels -d '{
 # Email:    {"host": "smtp.example.com", "port": 587, "username": "u",
 #            "password": "p", "from": "beacon@example.com", "to": ["ops@example.com"]}
 # Webhook:  {"url": "https://example.com/hook", "secret": "shared-secret"}
+# Matrix:   {"homeserver_url": "https://matrix.example.org", "access_token": "syt_...",
+#            "room_id": "!abcdef:example.org"}
+# PagerDuty:{"routing_key": "R0UT1NGK3Y", "severity": "warning"}
 
 curl -s localhost:8080/api/v1/channels
 curl -s -X PATCH localhost:8080/api/v1/channels/1 -d '{"enabled": false}'
@@ -282,8 +313,9 @@ cmd/sorobeacon      wiring + graceful shutdown
 internal/config     env config
 internal/stellar    RPC client (getEvents/getLatestLedger/getHealth) + ScVal decoder
 internal/store      Postgres (pgx) + embedded golang-migrate migrations
-internal/rules      RuleEvaluator interface + event_emitted, value_threshold
-internal/notify     Notifier interface + 5 channels + retrying dispatcher
+internal/rules      RuleEvaluator interface + event_emitted, value_threshold,
+                    token_event, frequency_threshold
+internal/notify     Notifier interface + 7 channels + retrying dispatcher
 internal/poller     ingest loop: poll -> decode -> match -> alert -> dispatch
 internal/api        chi JSON API
 internal/web        html/template + htmx dashboard
@@ -326,8 +358,8 @@ Decoded events use a small value vocabulary (`nil`, `bool`, `string`,
 
 ### Open contributor issues (by design)
 
-- More rule types (rate/frequency, absence-of-event, aggregation windows)
-- More channels (Matrix, PagerDuty, ntfy, ...)
+- More rule types (absence-of-event, aggregation windows)
+- More channels (ntfy, ...)
 - A richer SPA dashboard (the current one is intentionally minimal)
 - Contract-spec-aware event decoding (named fields instead of raw topics)
 

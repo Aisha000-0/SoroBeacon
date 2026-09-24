@@ -60,7 +60,7 @@ func decodeCursor(cursor string) (batch int, rpcCursor string) {
 	return n, rest
 }
 
-func (s *RPCSource) FetchEvents(ctx context.Context, startLedger uint32, contracts []string, cursor string, limit int) (FetchPage, error) {
+func (s *RPCSource) FetchEvents(ctx context.Context, startLedger uint32, watch []Watch, cursor string, limit int) (FetchPage, error) {
 	if limit <= 0 {
 		limit = stellar.DefaultEventsLimit
 	}
@@ -68,7 +68,7 @@ func (s *RPCSource) FetchEvents(ctx context.Context, startLedger uint32, contrac
 	// getEvents caps requests at MaxFiltersPerRequest filters with
 	// MaxContractIDsPerFilter contract IDs each. Group the watch list into
 	// request-sized batches; the cursor's batch index addresses a group.
-	groups := groupFilters(buildFilters(contracts))
+	groups := groupFilters(buildFilters(watch))
 
 	batchIdx, rpcCursor := decodeCursor(cursor)
 	if batchIdx >= len(groups) {
@@ -134,6 +134,57 @@ func (s *RPCSource) FetchEvents(ctx context.Context, startLedger uint32, contrac
 	}
 	page.NextCursor = encodeCursor(batchIdx, next)
 	return page, nil
+}
+
+// buildFilters packs watched contracts into getEvents filters. Contracts with
+// identical topic filters share a filter (up to MaxContractIDsPerFilter each),
+// because a filter's Topics apply to every contract ID in it; unfiltered
+// contracts share one group with no topics so their events are never dropped.
+// Order is preserved so a watch list produces a stable request shape.
+func buildFilters(watch []Watch) []stellar.EventFilter {
+	type group struct {
+		topics [][]string
+		ids    []string
+	}
+	index := map[string]int{}
+	var groups []group
+	for _, w := range watch {
+		key := topicKey(w.Topics)
+		i, ok := index[key]
+		if !ok {
+			i = len(groups)
+			index[key] = i
+			groups = append(groups, group{topics: w.Topics})
+		}
+		groups[i].ids = append(groups[i].ids, w.ContractID)
+	}
+
+	var out []stellar.EventFilter
+	for _, g := range groups {
+		for i := 0; i < len(g.ids); i += stellar.MaxContractIDsPerFilter {
+			end := min(i+stellar.MaxContractIDsPerFilter, len(g.ids))
+			out = append(out, stellar.EventFilter{
+				Type:        "contract",
+				ContractIDs: g.ids[i:end],
+				Topics:      g.topics,
+			})
+		}
+	}
+	return out
+}
+
+// topicKey renders a topic filter list as a map key. Two contracts group
+// together exactly when their filters represent the same query.
+func topicKey(topics [][]string) string {
+	if len(topics) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, segment := range topics {
+		b.WriteString(strings.Join(segment, "\x00"))
+		b.WriteByte('\x01')
+	}
+	return b.String()
 }
 
 // groupFilters packs filters into request-sized groups: each group holds

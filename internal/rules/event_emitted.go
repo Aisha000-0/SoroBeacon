@@ -75,6 +75,17 @@ func (EventEmitted) Evaluate(_ context.Context, ev *stellar.DecodedEvent, params
 	return true, nil
 }
 
+// EventNames reports the event name this rule is scoped to. A rule with no
+// event_name matches any event (perhaps via topic_equals), so it cannot name
+// them and callers must not narrow a server-side filter.
+func (EventEmitted) EventNames(params json.RawMessage) ([]string, bool) {
+	p, err := parseEventEmitted(params)
+	if err != nil || p.EventName == "" {
+		return nil, false
+	}
+	return []string{p.EventName}, true
+}
+
 func parseEventEmitted(params json.RawMessage) (eventEmittedParams, error) {
 	var p eventEmittedParams
 	if err := json.Unmarshal(params, &p); err != nil {
