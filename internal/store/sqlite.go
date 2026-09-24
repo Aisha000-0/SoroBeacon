@@ -1144,3 +1144,181 @@ func (s *SQLite) AlertCountsByDay(ctx context.Context, days int) ([]AlertDayCoun
 	}
 	return out, rows.Err()
 }
+
+// --- saved searches ---
+
+func (s *SQLite) CreateSavedSearch(ctx context.Context, ss *SavedSearch) error {
+	filter, _ := json.Marshal(ss.Filter)
+	if ss.IsDefault {
+		_, _ = s.db.ExecContext(ctx, `UPDATE saved_searches SET is_default = 0 WHERE is_default = 1`)
+	}
+	now := sqliteTimeString(time.Now())
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO saved_searches (name, filter, is_default, created_at) VALUES (?, ?, ?, ?)`,
+		ss.Name, string(filter), boolToInt(ss.IsDefault), now)
+	if err != nil {
+		return mapSQLiteErr(err)
+	}
+	ss.ID, _ = res.LastInsertId()
+	ss.CreatedAt, _ = parseSQLiteTime(now)
+	return nil
+}
+
+func (s *SQLite) ListSavedSearches(ctx context.Context) ([]SavedSearch, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, name, filter, is_default, created_at FROM saved_searches ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []SavedSearch
+	for rows.Next() {
+		var ss SavedSearch
+		var filter string
+		var isDefault int64
+		var createdAt string
+		if err := rows.Scan(&ss.ID, &ss.Name, &filter, &isDefault, &createdAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(filter), &ss.Filter)
+		ss.IsDefault = isDefault != 0
+		ss.CreatedAt, _ = parseSQLiteTime(createdAt)
+		out = append(out, ss)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) GetSavedSearch(ctx context.Context, id int64) (*SavedSearch, error) {
+	var ss SavedSearch
+	var filter string
+	var isDefault int64
+	var createdAt string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, name, filter, is_default, created_at FROM saved_searches WHERE id = ?`, id).
+		Scan(&ss.ID, &ss.Name, &filter, &isDefault, &createdAt)
+	if err != nil {
+		return nil, mapSQLiteErr(err)
+	}
+	_ = json.Unmarshal([]byte(filter), &ss.Filter)
+	ss.IsDefault = isDefault != 0
+	ss.CreatedAt, _ = parseSQLiteTime(createdAt)
+	return &ss, nil
+}
+
+func (s *SQLite) DeleteSavedSearch(ctx context.Context, id int64) error {
+	return s.deleteByID(ctx, "saved_searches", id)
+}
+
+func (s *SQLite) SetDefaultSearch(ctx context.Context, id int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	_, _ = tx.ExecContext(ctx, `UPDATE saved_searches SET is_default = 0 WHERE is_default = 1`)
+	res, err := tx.ExecContext(ctx, `UPDATE saved_searches SET is_default = 1 WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit()
+}
+
+func (s *SQLite) ClearDefaultSearch(ctx context.Context, id int64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE saved_searches SET is_default = 0 WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// --- monitor templates ---
+
+func (s *SQLite) CreateMonitorTemplate(ctx context.Context, t *MonitorTemplate) error {
+	rulesJSON, _ := json.Marshal(t.Rules)
+	paramsJSON, _ := json.Marshal(t.Parameters)
+	channelJSON, _ := json.Marshal(t.ChannelIDs)
+	now := sqliteTimeString(time.Now())
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO monitor_templates (name, description, rules, channel_ids, parameters, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		t.Name, t.Description, string(rulesJSON), string(channelJSON), string(paramsJSON), now)
+	if err != nil {
+		return mapSQLiteErr(err)
+	}
+	t.ID, _ = res.LastInsertId()
+	t.CreatedAt, _ = parseSQLiteTime(now)
+	return nil
+}
+
+func (s *SQLite) GetMonitorTemplate(ctx context.Context, id int64) (*MonitorTemplate, error) {
+	var t MonitorTemplate
+	var rulesJSON, channelJSON, paramsJSON, createdAt string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, name, description, rules, channel_ids, parameters, created_at FROM monitor_templates WHERE id = ?`, id).
+		Scan(&t.ID, &t.Name, &t.Description, &rulesJSON, &channelJSON, &paramsJSON, &createdAt)
+	if err != nil {
+		return nil, mapSQLiteErr(err)
+	}
+	_ = json.Unmarshal([]byte(rulesJSON), &t.Rules)
+	_ = json.Unmarshal([]byte(paramsJSON), &t.Parameters)
+	_ = json.Unmarshal([]byte(channelJSON), &t.ChannelIDs)
+	if t.ChannelIDs == nil {
+		t.ChannelIDs = []int64{}
+	}
+	t.CreatedAt, _ = parseSQLiteTime(createdAt)
+	return &t, nil
+}
+
+func (s *SQLite) ListMonitorTemplates(ctx context.Context) ([]MonitorTemplate, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, name, description, rules, channel_ids, parameters, created_at FROM monitor_templates ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []MonitorTemplate
+	for rows.Next() {
+		var t MonitorTemplate
+		var rulesJSON, channelJSON, paramsJSON, createdAt string
+		if err := rows.Scan(&t.ID, &t.Name, &t.Description, &rulesJSON, &channelJSON, &paramsJSON, &createdAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(rulesJSON), &t.Rules)
+		_ = json.Unmarshal([]byte(paramsJSON), &t.Parameters)
+		_ = json.Unmarshal([]byte(channelJSON), &t.ChannelIDs)
+		if t.ChannelIDs == nil {
+			t.ChannelIDs = []int64{}
+		}
+		t.CreatedAt, _ = parseSQLiteTime(createdAt)
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) UpdateMonitorTemplate(ctx context.Context, t *MonitorTemplate) error {
+	rulesJSON, _ := json.Marshal(t.Rules)
+	paramsJSON, _ := json.Marshal(t.Parameters)
+	channelJSON, _ := json.Marshal(t.ChannelIDs)
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE monitor_templates SET name=?, description=?, rules=?, channel_ids=?, parameters=? WHERE id=?`,
+		t.Name, t.Description, string(rulesJSON), string(channelJSON), string(paramsJSON), t.ID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *SQLite) DeleteMonitorTemplate(ctx context.Context, id int64) error {
+	return s.deleteByID(ctx, "monitor_templates", id)
+}
