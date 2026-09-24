@@ -244,8 +244,12 @@ curl -s -X DELETE localhost:8080/api/v1/channels/1
 curl -s -X POST localhost:8080/api/v1/channels/1/test
 ```
 
-Generic webhook deliveries carry an `X-SoroBeacon-Signature` header: the hex
-HMAC-SHA256 of the request body under your `secret`.
+Generic webhook deliveries carry an `X-SoroBeacon-Timestamp` header and an
+`X-SoroBeacon-Signature` header: the hex HMAC-SHA256 of `<timestamp>.<raw
+body>` under your `secret`. During a rotation, set `previous_secret` and a
+second `X-SoroBeacon-Signature-Previous` header lets receivers still on the
+old key verify. See [the webhook channel docs](docs/channels/webhook.md) for
+the canonical string and a verification example.
 
 Discord, Slack, Telegram and email configs accept an optional `template` (a Go
 `text/template` over the alert fields) to override the message; see
