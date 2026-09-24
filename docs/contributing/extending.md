@@ -86,8 +86,6 @@ specs live somewhere else, such as an indexer or a local cache.
 
 ## Wanted (open by design)
 
-* Secret encryption at rest for `channels.config`
-* API authentication middleware
 * Rule types: absence-of-event ("no heartbeat for N minutes"), frequency ("more than N matches in M minutes")
 * Channels: Matrix, PagerDuty, ntfy.sh
 * A richer dashboard

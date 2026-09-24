@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/sorotrail/sorobeacon/internal/auth"
 	"github.com/sorotrail/sorobeacon/internal/buildinfo"
 	"github.com/sorotrail/sorobeacon/internal/notify"
 	"github.com/sorotrail/sorobeacon/internal/poller"
@@ -51,6 +52,10 @@ type Server struct {
 	readyzLagThreshold uint32
 	rateLimit          RateLimitConfig
 	maxBodyBytes       int64
+	// auth verifies bearer tokens and dashboard sessions. Nil (the New
+	// default until WithAuth is called, or when no API_TOKEN is set) means
+	// every request is allowed.
+	auth *auth.Authenticator
 }
 
 // New wires an API server. Rate limiting stays off until WithRateLimit.
@@ -89,13 +94,26 @@ func (s *Server) WithRateLimit(cfg RateLimitConfig) *Server {
 	return s
 }
 
+// WithAuth requires the configured credentials on every API route except
+// the probes. A nil authenticator, or one with no tokens, leaves the API
+// open — the behaviour an unconfigured deployment had before authentication
+// existed. main builds one authenticator and shares it with the dashboard,
+// so a session minted at /login also satisfies this middleware.
+func (s *Server) WithAuth(a *auth.Authenticator) *Server {
+	s.auth = a
+	return s
+}
+
 // Routes returns the API router. Mounted under /api/v1 by cmd/sorobeacon.
 //
-// TODO(contributors): add authentication middleware here; the MVP assumes
-// the API is not exposed to untrusted networks.
+// Middleware order: auth before the rate limiter, so a flood of requests
+// with no credential costs one constant-time compare and returns 401
+// without allocating a limiter bucket or touching a store. The limiter then
+// only has to protect the served (authenticated) traffic.
 func (s *Server) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer, MaxBodyMiddleware(s.maxBodyBytes))
+	r.Use(AuthMiddleware(s.auth))
 	r.Use(RateLimitMiddleware(s.rateLimit))
 	// JSON clients hitting a typo'd path or the wrong method should get
 	// the same envelope as every other API error, not chi's plain-text
@@ -130,6 +148,7 @@ func (s *Server) Routes() chi.Router {
 	})
 
 	r.Get("/alerts", s.listAlerts)
+	r.Get("/alerts.csv", s.exportAlertsCSV)
 	r.Get("/alerts/{id}/deliveries", s.listDeliveries)
 	r.Post("/alerts/{id}/deliveries/{channelID}/retry", s.retryDelivery)
 	r.Get("/health", s.health)

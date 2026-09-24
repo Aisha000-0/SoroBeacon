@@ -2,6 +2,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"math"
@@ -52,6 +53,19 @@ type Config struct {
 	// DatabaseMaxConnIdleTime is the pgx pool MaxConnIdleTime. Zero
 	// means use the driver default (DATABASE_MAX_CONN_IDLE_TIME).
 	DatabaseMaxConnIdleTime time.Duration
+	// ConfigEncryptionKey is the decoded AES-GCM key used to encrypt
+	// channels.config at rest (CONFIG_ENCRYPTION_KEY, base64). Nil means
+	// encryption is disabled and configs stay plaintext, preserving the
+	// behaviour of deployments that have not set the variable.
+	ConfigEncryptionKey []byte
+	// APITokens is the parsed API_TOKEN list (API_TOKEN, comma-separated).
+	// Each entry is a static bearer token accepted on /api/v1 and can be
+	// used to sign in to the dashboard. Empty means no token is configured:
+	// the API and the dashboard stay open, exactly as they were before
+	// authentication existed, and the process logs one startup warning.
+	// Hold the tokens here, not the raw string: the values are secrets and
+	// must never be logged or echoed.
+	APITokens []string
 	// PollInterval is how often the poller asks the RPC for new events.
 	PollInterval time.Duration
 	// SourceMode selects where events come from: "rpc" (standalone,
@@ -162,6 +176,12 @@ func Load() (Config, error) {
 		}
 	}
 
+	tokens, err := parseAPITokens(os.Getenv("API_TOKEN"))
+	if err != nil {
+		return cfg, err
+	}
+	cfg.APITokens = tokens
+
 	if v := os.Getenv("HTTP_MAX_BODY_BYTES"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil || n <= 0 {
@@ -249,6 +269,11 @@ func Load() (Config, error) {
 	cfg.DatabaseMinConns = minConns
 	cfg.DatabaseMaxConnLifetime = maxLifetime
 	cfg.DatabaseMaxConnIdleTime = maxIdle
+	key, err := parseEncryptionKey(os.Getenv("CONFIG_ENCRYPTION_KEY"))
+	if err != nil {
+		return cfg, err
+	}
+	cfg.ConfigEncryptionKey = key
 	if v := os.Getenv("ALERT_RETENTION"); v != "" {
 		d, err := ParseRetention(v)
 		if err != nil {
@@ -295,6 +320,10 @@ func (c Config) LogAttrs() []slog.Attr {
 		slog.String("rpc_url", c.RPCURL),
 		slog.String("sorotrail_url", c.SoroTrailURL),
 		slog.String("cors_allowed_origins", strings.Join(c.CORSAllowedOrigins, ",")),
+		slog.Bool("config_encryption_enabled", len(c.ConfigEncryptionKey) > 0),
+		// The count, never the tokens themselves: LogAttrs is the one place
+		// configuration is printed, and an API token is a credential.
+		slog.Int("api_token_count", len(c.APITokens)),
 	}
 }
 
@@ -339,6 +368,32 @@ func ParseRetention(s string) (time.Duration, error) {
 	return d, nil
 }
 
+// parseEncryptionKey decodes CONFIG_ENCRYPTION_KEY, a base64-encoded AES-GCM
+// key. Empty means encryption is disabled. The key is checked here — before
+// the store is built — so a typo fails startup rather than the first channel
+// write. Errors name the variable and the allowed lengths but never echo the
+// key itself.
+func parseEncryptionKey(raw string) ([]byte, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	key, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		// Accept an unpadded key too; operators trimming the trailing '='
+		// from `openssl rand -base64 32` is a common mistake.
+		key, err = base64.RawStdEncoding.DecodeString(strings.TrimRight(raw, "="))
+		if err != nil {
+			return nil, fmt.Errorf("invalid CONFIG_ENCRYPTION_KEY: must be standard base64 (e.g. `openssl rand -base64 32`)")
+		}
+	}
+	switch len(key) {
+	case 16, 24, 32:
+		return key, nil
+	default:
+		return nil, fmt.Errorf("invalid CONFIG_ENCRYPTION_KEY: must decode to 16, 24 or 32 bytes for AES-GCM (got %d bytes)", len(key))
+	}
+}
+
 const databaseURLExample = "postgres://user:pass@localhost:5432/dbname?sslmode=disable"
 
 // validateDatabaseURL checks DATABASE_URL before any connection attempt so a
@@ -361,6 +416,29 @@ func validateDatabaseURL(raw string) error {
 	default:
 		return fmt.Errorf("DATABASE_URL scheme %q (host %s) is not supported (%s)", u.Scheme, u.Host, supported)
 	}
+}
+
+// parseAPITokens splits API_TOKEN on commas into the accepted bearer
+// tokens. A list rather than a single value is what makes rotation
+// possible without downtime: add the new token, roll clients over, drop the
+// old one. Entries are trimmed so a token cannot carry surrounding
+// whitespace (the header parser trims too, so both sides agree).
+//
+// Unset or empty disables authentication. A value that is set but yields no
+// usable token — ",", "   ", a stray comma — is an error rather than a
+// silent fallback to open access, because the operator clearly meant to
+// require a token. Errors never echo the value: it is a credential.
+func parseAPITokens(raw string) ([]string, error) {
+	var tokens []string
+	for _, t := range strings.Split(raw, ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			tokens = append(tokens, t)
+		}
+	}
+	if raw != "" && len(tokens) == 0 {
+		return nil, fmt.Errorf("invalid API_TOKEN: set but contains no tokens (use comma-separated values, or unset it to leave authentication off)")
+	}
+	return tokens, nil
 }
 
 func getenv(key, fallback string) string {

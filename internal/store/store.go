@@ -42,7 +42,8 @@ type Rule struct {
 // Channel is a configured notification destination. Config holds
 // channel-specific settings including secrets (webhook URLs, bot tokens,
 // SMTP credentials) — never log it and never return it from the API.
-// TODO(contributors): encrypt Config at rest; see CONTRIBUTING.md.
+// When a ConfigCipher is configured, Config is encrypted at rest and the
+// store returns it decrypted (see crypto.go).
 type Channel struct {
 	ID        int64           `json:"id"`
 	Name      string          `json:"name"`

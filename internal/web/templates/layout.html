@@ -64,6 +64,7 @@
     header .tz { margin-left: auto; display: flex; align-items: baseline; gap: .4rem; }
     header .tz label { margin: 0; font-size: .85rem; }
     header .tz select { width: auto; }
+    header .signout { display: flex; align-items: baseline; }
     main { padding: 1.5rem; max-width: 70rem; margin: 0 auto; }
     table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
     th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid var(--line); }
@@ -136,6 +137,11 @@
       </select>
     </label>
   </form>
+  {{if .AuthEnabled}}
+  <form class="signout" method="post" action="/logout">
+    <button type="submit">Sign out</button>
+  </form>
+  {{end}}
 </header>
 <main>
 {{template "content" .}}
