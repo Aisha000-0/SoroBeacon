@@ -479,7 +479,7 @@ func (p *Postgres) DeleteRule(ctx context.Context, id int64) error {
 // --- channels ---
 
 func (p *Postgres) CreateChannel(ctx context.Context, c *Channel) error {
-	config, err := p.configForWrite(c.ID, c.Name, c.Config)
+	config, err := configForWrite(p.cipher, c.ID, c.Name, c.Config)
 	if err != nil {
 		return err
 	}
@@ -498,7 +498,7 @@ func (p *Postgres) GetChannel(ctx context.Context, id int64) (*Channel, error) {
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	if err := p.decryptChannel(&c); err != nil {
+	if err := decryptChannel(p.cipher, &c); err != nil {
 		return nil, err
 	}
 	return &c, nil
@@ -544,7 +544,7 @@ func (p *Postgres) ListChannelsPage(ctx context.Context, f ListFilter) ([]Channe
 }
 
 func (p *Postgres) UpdateChannel(ctx context.Context, c *Channel) error {
-	config, err := p.configForWrite(c.ID, c.Name, c.Config)
+	config, err := configForWrite(p.cipher, c.ID, c.Name, c.Config)
 	if err != nil {
 		return err
 	}
@@ -584,7 +584,7 @@ func (p *Postgres) scanChannel(row pgx.CollectableRow) (Channel, error) {
 	if err := row.Scan(&c.ID, &c.Name, &c.Type, &c.Config, &c.Enabled, &c.CreatedAt); err != nil {
 		return c, err
 	}
-	if err := p.decryptChannel(&c); err != nil {
+	if err := decryptChannel(p.cipher, &c); err != nil {
 		return c, err
 	}
 	return c, nil
