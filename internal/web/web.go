@@ -993,13 +993,26 @@ func (s *Server) alerts(w http.ResponseWriter, r *http.Request) {
 		"Title": "Alerts", "Alerts": alerts, "Monitors": monitors,
 		"MonitorNames": names, "SelectedMonitor": selected,
 		"SelectedRule": selectedRule, "ContractID": f.ContractID, "Sort": sort,
-		"Empty": emptyKind(monitors, channels, alerts),
+		"ExportHref": alertExportHref(selected, selectedRule, f.ContractID, f.Sort),
+		"Empty":      emptyKind(monitors, channels, alerts),
 	}
 	if next != "" {
 		// template.URL so filter query separators are not %26-escaped.
 		data["OlderHref"] = template.URL("/alerts?" + alertFilterQuery(selected, selectedRule, f.ContractID, f.Sort) + "cursor=" + next)
 	}
 	s.render(w, r, "alerts", data)
+}
+
+// alertExportHref is the dashboard's CSV export link: the same filters as
+// the list currently on screen, pointed at the JSON API's /alerts.csv. The
+// cursor is deliberately dropped — an export is the whole filtered set, not
+// just the page after the one being viewed.
+func alertExportHref(monitorID, ruleID int64, contractID, sort string) template.URL {
+	q := strings.TrimSuffix(alertFilterQuery(monitorID, ruleID, contractID, sort), "&")
+	if q == "" {
+		return template.URL("/api/v1/alerts.csv")
+	}
+	return template.URL("/api/v1/alerts.csv?" + q)
 }
 
 // alertFilterQuery is the monitor/rule/contract/sort prefix preserved on

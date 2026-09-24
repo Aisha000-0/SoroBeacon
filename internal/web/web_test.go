@@ -283,6 +283,46 @@ func TestAlertFilterQueryOmitsDefaults(t *testing.T) {
 	}
 }
 
+// TestAlertExportHref covers the dashboard CSV link: it must target the
+// JSON API's export endpoint, drop the (meaningless) cursor, and preserve
+// the filters applied to the list on screen.
+func TestAlertExportHref(t *testing.T) {
+	if got := alertExportHref(0, 0, "", ""); got != "/api/v1/alerts.csv" {
+		t.Fatalf("defaults = %q, want the bare export URL", got)
+	}
+	got := string(alertExportHref(7, 9, "CAAA", "created_at_asc"))
+	for _, want := range []string{"/api/v1/alerts.csv?", "monitor_id=7", "rule_id=9", "contract_id=CAAA", "sort=created_at_asc"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("export href %q missing %q", got, want)
+		}
+	}
+	if strings.Contains(got, "cursor=") {
+		t.Fatalf("export href must not carry the list cursor: %q", got)
+	}
+}
+
+func TestAlertsPageRendersExportLink(t *testing.T) {
+	s, err := New(alertPagingStore{n: 1}, rules.NewRegistry(), notify.DefaultFactory(), slog.New(slog.NewTextHandler(os.Stdout, nil)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	srv := httptest.NewServer(s.Routes())
+	defer srv.Close()
+	res, err := http.Get(srv.URL + "/alerts?monitor_id=7&contract_id=CAAA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	if !strings.Contains(html, `/api/v1/alerts.csv?`) || !strings.Contains(html, `monitor_id=7`) {
+		t.Fatalf("expected export link preserving filters, got:\n%s", html)
+	}
+}
+
 func TestMonitorFilterQueryOmitsDefaults(t *testing.T) {
 	if got := monitorFilterQuery("", "", ""); got != "" {
 		t.Fatalf("defaults = %q, want empty so ?cursor= stays stable", got)

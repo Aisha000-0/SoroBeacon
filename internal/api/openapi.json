@@ -472,6 +472,65 @@
         }
       }
     },
+    "/alerts.csv": {
+      "get": {
+        "summary": "Export alerts as CSV",
+        "description": "Streams every alert matching the same filters as GET /alerts as text/csv. Columns are fixed: id, monitor_name, rule_id, contract_id, event_name, event_id, ledger, created_at, payload. Values beginning with =, +, - or @ are prefixed with an apostrophe to prevent spreadsheet formula injection. When no limit is given the export is capped at 10000 rows.",
+        "parameters": [
+          {
+            "name": "monitor_id",
+            "in": "query",
+            "schema": { "type": "integer", "format": "int64" }
+          },
+          {
+            "name": "rule_id",
+            "in": "query",
+            "schema": { "type": "integer", "format": "int64" }
+          },
+          {
+            "name": "contract_id",
+            "in": "query",
+            "schema": { "type": "string" },
+            "description": "Exact match on payload.contract_id"
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": { "type": "string", "format": "date-time" },
+            "description": "RFC 3339 lower bound on alert creation"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": { "type": "string", "format": "date-time" },
+            "description": "RFC 3339 upper bound on alert creation"
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["created_at_desc", "created_at_asc"], "default": "created_at_desc" },
+            "description": "Keyset order; anything else is 400"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "default": 10000, "maximum": 10000 },
+            "description": "Maximum rows to export; the endpoint caps at 10000"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Alerts as CSV",
+            "content": {
+              "text/csv": {
+                "schema": { "type": "string" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
     "/alerts/{id}/deliveries": {
       "parameters": [
         { "$ref": "#/components/parameters/ID" }

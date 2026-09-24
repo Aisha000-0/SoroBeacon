@@ -2,21 +2,25 @@ package api
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/sorotrail/sorobeacon/internal/notify"
+	"github.com/sorotrail/sorobeacon/internal/reqid"
 	"github.com/sorotrail/sorobeacon/internal/store"
 )
 
-// listAlerts serves GET /alerts with query filters:
-// monitor_id, rule_id, contract_id, from, to (RFC 3339), sort
-// (created_at_desc default, created_at_asc), limit, cursor (last seen
-// alert id; comparison follows sort).
-func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {
+// parseAlertFilter reads the shared alert listing query params
+// (monitor_id, rule_id, contract_id, from, to as RFC 3339, sort, limit,
+// cursor). GET /alerts and GET /alerts.csv both call it so the two
+// endpoints cannot drift on which params exist or how bad values are
+// reported. On failure it has already written the error envelope.
+func parseAlertFilter(w http.ResponseWriter, r *http.Request) (store.AlertFilter, bool) {
 	q := r.URL.Query()
 	var f store.AlertFilter
 
@@ -24,7 +28,7 @@ func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
 			writeErr(w, r, http.StatusBadRequest, "invalid monitor_id")
-			return
+			return f, false
 		}
 		f.MonitorID = id
 	}
@@ -32,7 +36,7 @@ func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
 			writeErr(w, r, http.StatusBadRequest, "invalid rule_id")
-			return
+			return f, false
 		}
 		f.RuleID = id
 	}
@@ -43,7 +47,7 @@ func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {
 			f.Sort = v
 		default:
 			writeErr(w, r, http.StatusBadRequest, "invalid sort")
-			return
+			return f, false
 		}
 	}
 	for name, dst := range map[string]*time.Time{"from": &f.From, "to": &f.To} {
@@ -51,7 +55,7 @@ func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {
 			t, err := time.Parse(time.RFC3339, v)
 			if err != nil {
 				writeErr(w, r, http.StatusBadRequest, "invalid "+name+" (want RFC 3339)")
-				return
+				return f, false
 			}
 			*dst = t
 		}
@@ -60,7 +64,7 @@ func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 {
 			writeErr(w, r, http.StatusBadRequest, "invalid limit")
-			return
+			return f, false
 		}
 		f.Limit = n
 	}
@@ -68,9 +72,21 @@ func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
 			writeErr(w, r, http.StatusBadRequest, "invalid cursor")
-			return
+			return f, false
 		}
 		f.AfterID = id
+	}
+	return f, true
+}
+
+// listAlerts serves GET /alerts with query filters:
+// monitor_id, rule_id, contract_id, from, to (RFC 3339), sort
+// (created_at_desc default, created_at_asc), limit, cursor (last seen
+// alert id; comparison follows sort).
+func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {
+	f, ok := parseAlertFilter(w, r)
+	if !ok {
+		return
 	}
 
 	alerts, err := s.store.ListAlerts(r.Context(), f)
@@ -97,6 +113,155 @@ func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {
 		next = strconv.FormatInt(alerts[len(alerts)-1].ID, 10)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"alerts": alerts, "next_cursor": next})
+}
+
+// maxAlertExportRows is the documented ceiling on a single CSV export when
+// the caller does not ask for a smaller limit. The export streams page by
+// page, so this bounds the total rows rather than peak memory, but it still
+// keeps a hand-typed URL from pinning a connection indefinitely.
+const maxAlertExportRows = 10000
+
+// alertExportPageSize is the store's hard maximum page size. ListAlerts
+// silently clamps anything larger back to 50, which would make a full-page
+// check misfire and re-query the same rows, so the export always pages at
+// exactly this size and relies on the keyset cursor for the rest.
+const alertExportPageSize = 500
+
+// alertCSVHeader is the fixed column order of the CSV export. The order is
+// part of the endpoint's contract: spreadsheet templates and importers key
+// off column position, so new columns are appended, never inserted.
+var alertCSVHeader = []string{
+	"id", "monitor_name", "rule_id", "contract_id",
+	"event_name", "event_id", "ledger", "created_at", "payload",
+}
+
+// exportAlertsCSV serves GET /alerts.csv. It shares parseAlertFilter with
+// GET /alerts, pages through the store with a keyset cursor (so the whole
+// result set is never held in memory) and writes each page straight to the
+// response as CSV. An absent limit means "everything", capped at
+// maxAlertExportRows; an explicit limit is honoured up to that same cap.
+func (s *Server) exportAlertsCSV(w http.ResponseWriter, r *http.Request) {
+	f, ok := parseAlertFilter(w, r)
+	if !ok {
+		return
+	}
+	remaining := f.Limit
+	if remaining <= 0 || remaining > maxAlertExportRows {
+		remaining = maxAlertExportRows
+	}
+
+	// monitor_name needs a lookup that the alert rows do not carry. Fetch it
+	// once up front rather than re-querying every monitor for every page; a
+	// failure here can still be reported as a normal error envelope because
+	// nothing has been written yet.
+	monitors, err := s.store.ListMonitors(r.Context(), false)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	names := make(map[int64]string, len(monitors))
+	for _, m := range monitors {
+		names[m.ID] = m.Name
+	}
+
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+alertExportFilename(f)+`"`)
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+
+	cw := csv.NewWriter(w)
+	if err := cw.Write(alertCSVHeader); err != nil {
+		s.log.Error("alert export write failed", "request_id", reqid.From(r), "err", err)
+		return
+	}
+	for remaining > 0 {
+		f.Limit = remaining
+		if f.Limit > alertExportPageSize {
+			f.Limit = alertExportPageSize
+		}
+		page, err := s.store.ListAlerts(r.Context(), f)
+		if err != nil {
+			// Headers and rows are already on the wire, so a JSON error
+			// envelope would corrupt the CSV. Log with the request id so the
+			// failure is still traceable, then end the stream.
+			s.log.Error("alert export list failed", "request_id", reqid.From(r), "err", err)
+			cw.Flush()
+			return
+		}
+		for _, a := range page {
+			if err := cw.Write(alertCSVRow(a, names[a.MonitorID])); err != nil {
+				s.log.Error("alert export write failed", "request_id", reqid.From(r), "err", err)
+				return
+			}
+		}
+		cw.Flush()
+		if err := cw.Error(); err != nil {
+			s.log.Error("alert export flush failed", "request_id", reqid.From(r), "err", err)
+			return
+		}
+		// A short page means the filter is exhausted; anything else would
+		// make the cursor loop forever against a full page that never ends.
+		if len(page) < f.Limit {
+			return
+		}
+		remaining -= len(page)
+		f.AfterID = page[len(page)-1].ID
+	}
+}
+
+// alertCSVRow flattens one alert into the export's fixed column order. The
+// payload's contract id, event name and ledger are extracted for the
+// spreadsheet-friendly columns, while the original payload is emitted
+// verbatim as the last column so no information is lost.
+func alertCSVRow(a store.Alert, monitorName string) []string {
+	var p struct {
+		ContractID string `json:"contract_id"`
+		EventName  string `json:"event_name"`
+		Ledger     uint32 `json:"ledger"`
+	}
+	_ = json.Unmarshal(a.Payload, &p)
+	return []string{
+		strconv.FormatInt(a.ID, 10),
+		csvSafe(monitorName),
+		strconv.FormatInt(a.RuleID, 10),
+		csvSafe(p.ContractID),
+		csvSafe(p.EventName),
+		csvSafe(a.EventID),
+		strconv.FormatUint(uint64(p.Ledger), 10),
+		a.CreatedAt.UTC().Format(time.RFC3339),
+		csvSafe(string(a.Payload)),
+	}
+}
+
+// alertExportFilename names the download after the requested date range so
+// several exports from the same dashboard do not collide in a Downloads
+// folder. A missing bound reads as "all".
+func alertExportFilename(f store.AlertFilter) string {
+	from, to := "all", "all"
+	if !f.From.IsZero() {
+		from = f.From.UTC().Format("20060102")
+	}
+	if !f.To.IsZero() {
+		to = f.To.UTC().Format("20060102")
+	}
+	return fmt.Sprintf("alerts_%s_%s.csv", from, to)
+}
+
+// csvSafe neutralizes spreadsheet formula injection. Excel, Sheets and
+// LibreOffice treat a cell starting with =, +, - or @ as a formula, so
+// attacker-controlled on-chain strings (contract ids, event names, the
+// payload itself) could otherwise execute a command or exfiltrate data when
+// the export is opened. Prefixing an apostrophe keeps the value as text;
+// the spreadsheet hides the apostrophe from the displayed cell.
+func csvSafe(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@':
+		return "'" + s
+	}
+	return s
 }
 
 // listDeliveries serves GET /alerts/{id}/deliveries.
