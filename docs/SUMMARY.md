@@ -6,12 +6,14 @@
 
 * [Quickstart](getting-started/quickstart.md)
 * [Configuration](getting-started/configuration.md)
+* [Docker Compose](getting-started/docker.md)
 * [Environment variable reference](configuration.md)
 
 ## 🧭 Guides
 
 * [Monitors & alerts](guides/monitors-and-alerts.md)
 * [The dashboard](guides/dashboard.md)
+* [Monitoring a token contract](guides/monitoring-a-token.md)
 
 ## 📏 Rule reference
 
@@ -29,10 +31,15 @@
 * [Generic webhook](channels/webhook.md)
 * [Message templates](channels/templates.md)
 
+## 📏 Operations
+
+* [Capacity and scaling](operations/scaling.md)
+
 ## 🛠️ Reference
 
 * [Architecture](reference/architecture.md)
 * [HTTP API](reference/api.md)
+* [CLI flags (environment variables)](reference/cli.md)
 
 ## 🔌 Contributing
 
