@@ -204,6 +204,12 @@ curl -s -X POST localhost:8080/api/v1/monitors/1/rules -d '{
 }'
 ```
 
+Every rule type also accepts an optional `cooldown` (a Go duration string such
+as `"5m"`): the first match alerts, further matches in the window are counted
+and dropped, and the next alert reports `suppressed_since_last`. It survives a
+restart and is enforced in the database alongside the dedup guard — see
+[docs/rules/cooldown.md](docs/rules/cooldown.md).
+
 ```sh
 curl -s localhost:8080/api/v1/monitors/1/rules
 curl -s -X PATCH localhost:8080/api/v1/monitors/1/rules/2 -d '{"enabled": false}'

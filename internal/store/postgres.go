@@ -562,12 +562,61 @@ func scanChannel(row pgx.CollectableRow) (Channel, error) {
 
 // --- alerts ---
 
-func (p *Postgres) CreateAlert(ctx context.Context, a *Alert) (bool, error) {
+func (p *Postgres) CreateAlert(ctx context.Context, a *Alert) (AlertOutcome, error) {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
-		return false, err
+		return "", err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // rollback after commit is a no-op
+
+	// The cooldown decision is taken under a lock on the rule row, so two
+	// poller instances cannot both fire inside one window. A zero cooldown
+	// skips all of it and leaves the dedup guard as the only gate, exactly as
+	// before this option existed.
+	if a.Cooldown > 0 {
+		var suppressed int64
+		var inCooldown bool
+		err := tx.QueryRow(ctx,
+			`SELECT suppressed_since_last,
+			        COALESCE(last_alert_at + make_interval(secs => $2) > now(), false)
+			   FROM rules WHERE id = $1 FOR UPDATE`,
+			a.RuleID, a.Cooldown.Seconds()).Scan(&suppressed, &inCooldown)
+		if err != nil {
+			return "", mapErr(err)
+		}
+
+		// A replayed event is a duplicate, not a fresh match, so it must not
+		// inflate the suppressed count. Under the rule lock this check and the
+		// insert below cannot interleave with another writer for the rule.
+		var duplicate bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM alerts WHERE rule_id = $1 AND event_id = $2)`,
+			a.RuleID, a.EventID).Scan(&duplicate); err != nil {
+			return "", err
+		}
+		if duplicate {
+			return AlertDuplicate, nil
+		}
+
+		if inCooldown {
+			if _, err := tx.Exec(ctx,
+				`UPDATE rules SET suppressed_since_last = suppressed_since_last + 1 WHERE id = $1`,
+				a.RuleID); err != nil {
+				return "", err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return "", err
+			}
+			return AlertSuppressed, nil
+		}
+
+		// The count is read before the insert so it can ride on the payload
+		// the alert is written with, and the window is closed at the same
+		// time: one transaction, so a crash cannot lose a suppression count or
+		// leave the window open.
+		a.SuppressedSinceLast = suppressed
+		a.Payload = WithSuppressed(a.Payload, suppressed)
+	}
 
 	err = tx.QueryRow(ctx,
 		`INSERT INTO alerts (monitor_id, rule_id, event_id, payload) VALUES ($1, $2, $3, $4)
@@ -576,11 +625,20 @@ func (p *Postgres) CreateAlert(ctx context.Context, a *Alert) (bool, error) {
 		a.MonitorID, a.RuleID, a.EventID, jsonOrEmpty(a.Payload),
 	).Scan(&a.ID, &a.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil // duplicate (rule_id, event_id): deduped
+		return AlertDuplicate, nil // duplicate (rule_id, event_id): deduped
 	}
 	if err != nil {
-		return false, err
+		return "", err
 	}
+
+	if a.Cooldown > 0 {
+		if _, err := tx.Exec(ctx,
+			`UPDATE rules SET last_alert_at = now(), suppressed_since_last = 0 WHERE id = $1`,
+			a.RuleID); err != nil {
+			return "", err
+		}
+	}
+
 	// Stamp last_matched_at with the event's ledger close time, never wall
 	// clock. Only move the column forward so a replayed older event cannot
 	// make a live monitor look stale.
@@ -589,13 +647,13 @@ func (p *Postgres) CreateAlert(ctx context.Context, a *Alert) (bool, error) {
 			`UPDATE monitors SET last_matched_at = $1
 			 WHERE id = $2 AND (last_matched_at IS NULL OR last_matched_at < $1)`,
 			a.LedgerClosedAt.UTC(), a.MonitorID); err != nil {
-			return false, err
+			return "", err
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return false, err
+		return "", err
 	}
-	return true, nil
+	return AlertCreated, nil
 }
 
 func (p *Postgres) GetAlert(ctx context.Context, id int64) (*Alert, error) {
@@ -760,6 +818,27 @@ func jsonOrEmpty(raw json.RawMessage) []byte {
 		return []byte(`{}`)
 	}
 	return raw
+}
+
+// WithSuppressed annotates an alert payload with the number of matches the
+// rule's cooldown swallowed, so an operator sees the scale of what happened
+// instead of a silent gap. A payload that is not a JSON object is returned
+// untouched rather than replaced. Exported so alternative Stores and the
+// poller's test fake can produce the identical payload shape.
+func WithSuppressed(payload json.RawMessage, n int64) json.RawMessage {
+	if n <= 0 {
+		return payload
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(payload, &obj); err != nil || obj == nil {
+		return payload
+	}
+	obj["suppressed_since_last"] = n
+	merged, err := json.Marshal(obj)
+	if err != nil {
+		return payload
+	}
+	return merged
 }
 
 // mapErr converts pgx sentinel and FK errors into store-level errors.

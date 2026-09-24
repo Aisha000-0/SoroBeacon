@@ -64,17 +64,29 @@ func (f *fakeRPC) GetHealth(context.Context) (*stellar.Health, error) {
 	return &stellar.Health{Status: "healthy"}, nil
 }
 
-// fakeStore implements poller.Store in memory.
+// fakeStore implements poller.Store in memory, including the rule cooldown
+// semantics the real store enforces in SQL. now is injectable so tests can
+// advance the cooldown window without sleeping.
 type fakeStore struct {
 	monitors []store.Monitor
 	rules    map[int64][]store.Rule // monitor id -> rules
 	state    store.IngestState
 	alerts   []store.Alert
 	dedup    map[string]bool // "ruleID/eventID"
+
+	now        func() time.Time
+	lastFired  map[int64]time.Time // rule id -> last alert time
+	suppressed map[int64]int64     // rule id -> matches dropped this window
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{rules: map[int64][]store.Rule{}, dedup: map[string]bool{}}
+	return &fakeStore{
+		rules:      map[int64][]store.Rule{},
+		dedup:      map[string]bool{},
+		now:        time.Now,
+		lastFired:  map[int64]time.Time{},
+		suppressed: map[int64]int64{},
+	}
 }
 
 func (f *fakeStore) ListMonitors(_ context.Context, enabledOnly bool) ([]store.Monitor, error) {
@@ -97,13 +109,27 @@ func (f *fakeStore) ListRules(_ context.Context, monitorID int64, enabledOnly bo
 	return out, nil
 }
 
-func (f *fakeStore) CreateAlert(_ context.Context, a *store.Alert) (bool, error) {
+func (f *fakeStore) CreateAlert(_ context.Context, a *store.Alert) (store.AlertOutcome, error) {
 	key := fmt.Sprintf("%d/%s", a.RuleID, a.EventID)
 	if f.dedup[key] {
-		return false, nil
+		return store.AlertDuplicate, nil // replay, not a fresh match
+	}
+	// Mirror the real store: check the window before the dedup insert, and
+	// count a suppressed match rather than writing an alert.
+	if a.Cooldown > 0 {
+		if last, ok := f.lastFired[a.RuleID]; ok && f.now().Before(last.Add(a.Cooldown)) {
+			f.suppressed[a.RuleID]++
+			return store.AlertSuppressed, nil
+		}
 	}
 	f.dedup[key] = true
 	a.ID = int64(len(f.alerts) + 1)
+	if a.Cooldown > 0 {
+		a.SuppressedSinceLast = f.suppressed[a.RuleID]
+		f.suppressed[a.RuleID] = 0
+		a.Payload = store.WithSuppressed(a.Payload, a.SuppressedSinceLast)
+		f.lastFired[a.RuleID] = f.now()
+	}
 	f.alerts = append(f.alerts, *a)
 	if !a.LedgerClosedAt.IsZero() {
 		for i := range f.monitors {
@@ -116,7 +142,7 @@ func (f *fakeStore) CreateAlert(_ context.Context, a *store.Alert) (bool, error)
 			}
 		}
 	}
-	return true, nil
+	return store.AlertCreated, nil
 }
 
 func (f *fakeStore) GetIngestState(context.Context) (store.IngestState, error) { return f.state, nil }
@@ -274,6 +300,100 @@ func TestPollDedupsAcrossPolls(t *testing.T) {
 
 	assert.Len(t, st.alerts, 1, "dedup guard: one alert per (rule, event)")
 	assert.Len(t, d.dispatched, 1, "duplicates must not be re-dispatched")
+}
+
+// burst feeds a poller one page of distinct transfer events, all matching the
+// seeded rule. Reusing the same store across calls models successive polls.
+func burst(t *testing.T, st *fakeStore, d *fakeDispatcher, ids ...string) {
+	t.Helper()
+	events := make([]stellar.Event, len(ids))
+	for i, id := range ids {
+		events[i] = transferEvent(id, 5990, "1")
+	}
+	rpc := &fakeRPC{latest: 6000, responses: []*stellar.GetEventsResult{{
+		Events: events, LatestLedger: 6000,
+	}}}
+	require.NoError(t, newTestPoller(rpc, st, d).Poll(context.Background()))
+}
+
+// dispatchedSuppressed reads the suppressed-count an alert carried.
+func dispatchedSuppressed(t *testing.T, a notify.Alert) int64 {
+	t.Helper()
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(a.Payload, &payload))
+	n, _ := payload["suppressed_since_last"].(float64)
+	return int64(n)
+}
+
+// TestPollCooldownSuppressesBurst is the core requirement: with a cooldown, a
+// burst of matches collapses to exactly one alert.
+func TestPollCooldownSuppressesBurst(t *testing.T) {
+	clock := time.Unix(1_700_000_000, 0)
+	st := newFakeStore()
+	st.now = func() time.Time { return clock }
+	st.state.LastLedger = 5500
+	seedMonitor(st, `{"event_name": "transfer", "cooldown": "5m"}`)
+	d := &fakeDispatcher{}
+
+	burst(t, st, d, "ev-1", "ev-2", "ev-3", "ev-4", "ev-5")
+
+	require.Len(t, st.alerts, 1, "a burst inside the cooldown yields exactly one alert")
+	assert.Equal(t, "ev-1", st.alerts[0].EventID)
+	require.Len(t, d.dispatched, 1, "suppressed matches must not be dispatched")
+}
+
+// TestPollCooldownWindowExpiresAndReportsSuppressed advances a fake clock past
+// the window and checks the suppressed matches are surfaced on the next alert
+// rather than silently lost.
+func TestPollCooldownWindowExpiresAndReportsSuppressed(t *testing.T) {
+	clock := time.Unix(1_700_000_000, 0)
+	st := newFakeStore()
+	st.now = func() time.Time { return clock }
+	st.state.LastLedger = 5500
+	seedMonitor(st, `{"event_name": "transfer", "cooldown": "5m"}`)
+	d := &fakeDispatcher{}
+
+	burst(t, st, d, "ev-1")
+	burst(t, st, d, "ev-2", "ev-3", "ev-4") // suppressed
+	require.Len(t, st.alerts, 1)
+
+	// Still inside the window.
+	clock = clock.Add(4 * time.Minute)
+	burst(t, st, d, "ev-5")
+	require.Len(t, st.alerts, 1, "4m is inside a 5m window")
+
+	// Past the window: the next alert fires and reports the three suppressed
+	// matches (ev-2, ev-3, ev-4; ev-5 landed while still inside).
+	clock = clock.Add(2 * time.Minute)
+	burst(t, st, d, "ev-6")
+	require.Len(t, st.alerts, 2, "6m is past a 5m window")
+	assert.Equal(t, "ev-6", st.alerts[1].EventID)
+
+	require.Len(t, d.dispatched, 2)
+	assert.EqualValues(t, 4, dispatchedSuppressed(t, d.dispatched[1]),
+		"the alert after the window must report how many matches it swallowed")
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(st.alerts[1].Payload, &payload))
+	assert.EqualValues(t, 4, payload["suppressed_since_last"],
+		"the stored payload carries the count too")
+}
+
+// TestPollWithoutCooldownAlertsEveryMatch pins the optional half: a rule with no
+// cooldown behaves exactly as it did before the option existed.
+func TestPollWithoutCooldownAlertsEveryMatch(t *testing.T) {
+	st := newFakeStore()
+	st.state.LastLedger = 5500
+	seedMonitor(st, `{"event_name": "transfer"}`)
+	d := &fakeDispatcher{}
+
+	burst(t, st, d, "ev-1", "ev-2", "ev-3")
+
+	assert.Len(t, st.alerts, 3, "no cooldown means one alert per match")
+	assert.Len(t, d.dispatched, 3)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(st.alerts[0].Payload, &payload))
+	assert.NotContains(t, payload, "suppressed_since_last")
 }
 
 func TestPollFollowsCursor(t *testing.T) {

@@ -271,6 +271,21 @@ func TestCreateChannel_RejectsInvalidTemplate(t *testing.T) {
 	}
 }
 
+// TestCreateRule_RejectsInvalidCooldown proves the cross-cutting cooldown is
+// validated when the rule is created, not discovered when a burst starts.
+func TestCreateRule_RejectsInvalidCooldown(t *testing.T) {
+	res, env := postJSON(t, "/monitors/1/rules", map[string]any{
+		"type":   "event_emitted",
+		"params": map[string]any{"event_name": "transfer", "cooldown": "5 minutes"},
+	})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", res.StatusCode)
+	}
+	if len(env.Details) != 1 || env.Details[0].Field != "params.cooldown" {
+		t.Fatalf("details = %+v, want a params.cooldown detail", env.Details)
+	}
+}
+
 // TestUpdateChannel_RejectsInvalidTemplate covers the other write path: a bad
 // template sent on update is rejected before it is persisted.
 func TestUpdateChannel_RejectsInvalidTemplate(t *testing.T) {
