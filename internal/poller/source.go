@@ -6,6 +6,19 @@ import (
 	"github.com/sorotrail/sorobeacon/internal/stellar"
 )
 
+// Watch is one contract the poller asked for, plus the server-side topic
+// filter derived from that contract's enabled rules. A nil Topics means no
+// safe filter could be derived (some rule matches unnamed events), so the
+// source must return every event for the contract. Server-side filtering is
+// only ever an optimisation: the poller still evaluates every returned event
+// against every rule, and that client-side evaluation is the source of truth.
+type Watch struct {
+	ContractID string
+	// Topics is a list of alternative topic filters (OR-ed together), each a
+	// list of positional segment matchers with "*" and "**" wildcards.
+	Topics [][]string
+}
+
 // EventSource is where events come from. The poller itself only knows this
 // interface, so the ingest loop is identical regardless of backend:
 //
@@ -27,13 +40,14 @@ type EventSource interface {
 	// FetchEvents returns one page of decoded events. The first call for a
 	// cycle passes StartLedger and an empty Cursor; continuation calls pass
 	// the Cursor returned by the previous page, with StartLedger ignored.
-	// Contracts is the full watch list for the cycle, identical on every
-	// call of that cycle, so sources that batch (the RPC caps filters per
-	// request) can encode batch position in the cursor.
+	// Watch is the full watch list for the cycle, identical on every call of
+	// that cycle, so sources that batch (the RPC caps filters per request)
+	// can encode batch position in the cursor. A source that cannot express
+	// per-contract topic filters may ignore Watch[].Topics.
 	//
 	// The cursor is opaque to the poller; only the producing source may
 	// interpret it. An empty NextCursor ends the cycle.
-	FetchEvents(ctx context.Context, startLedger uint32, contracts []string, cursor string, limit int) (FetchPage, error)
+	FetchEvents(ctx context.Context, startLedger uint32, watch []Watch, cursor string, limit int) (FetchPage, error)
 }
 
 // FetchPage is one page of events from an EventSource.

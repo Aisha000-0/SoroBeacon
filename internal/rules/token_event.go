@@ -205,6 +205,24 @@ func parseBig(s string) *big.Int {
 	return n
 }
 
+// EventNames reports the SEP-41 event this rule is scoped to. A wildcard
+// ("*") rule matches several events and reports them all; a rule with no
+// event at all matches none, which is invalid and cannot be narrowed.
+func (TokenEvent) EventNames(params json.RawMessage) ([]string, bool) {
+	p, err := parseTokenEvent(params)
+	if err != nil || p.Event == "" {
+		return nil, false
+	}
+	if p.Event == "*" {
+		names := make([]string, 0, len(sep41Events))
+		for name := range sep41Events {
+			names = append(names, name)
+		}
+		return names, true
+	}
+	return []string{p.Event}, true
+}
+
 func parseTokenEvent(params json.RawMessage) (tokenEventParams, error) {
 	var p tokenEventParams
 	if err := json.Unmarshal(params, &p); err != nil {

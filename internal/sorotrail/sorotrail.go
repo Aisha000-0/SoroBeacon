@@ -169,10 +169,16 @@ func (s *Source) LatestLedger(ctx context.Context) (uint32, error) {
 // FetchEvents pages the indexer's /events. SoroTrail paginates ascending by
 // event ID with an opaque cursor, which passes through untouched: one
 // request covers the whole contract union, so there is no batching state
-// to encode.
-func (s *Source) FetchEvents(ctx context.Context, startLedger uint32, contracts []string, cursor string, limit int) (poller.FetchPage, error) {
+// to encode. The per-contract topic filters are ignored: the indexer's API
+// selects by contract, and filtering there would not change what the rules
+// engine sees, so there is nothing to gain from encoding them.
+func (s *Source) FetchEvents(ctx context.Context, startLedger uint32, watch []poller.Watch, cursor string, limit int) (poller.FetchPage, error) {
 	if limit <= 0 {
 		limit = 50
+	}
+	contracts := make([]string, 0, len(watch))
+	for _, w := range watch {
+		contracts = append(contracts, w.ContractID)
 	}
 	res, err := s.client.Events(ctx, joinComma(contracts), int64(startLedger), cursor, limit)
 	if err != nil {

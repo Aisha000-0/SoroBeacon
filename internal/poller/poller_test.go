@@ -490,3 +490,154 @@ func TestPollIgnoresEventsFromUnwatchedContracts(t *testing.T) {
 	require.NoError(t, p.Poll(context.Background()))
 	assert.Empty(t, st.alerts)
 }
+
+// TestPollDerivesTopicFiltersFromNamedRules pins the optimisation: when every
+// enabled rule on a contract names an event, the poller narrows the getEvents
+// filter so the node does not stream events we would discard.
+func TestPollDerivesTopicFiltersFromNamedRules(t *testing.T) {
+	rpc := &fakeRPC{latest: 6000}
+	st := newFakeStore()
+	seedMonitor(st, `{"event_name": "transfer"}`)
+	p := newTestPoller(rpc, st, &fakeDispatcher{})
+
+	require.NoError(t, p.Poll(context.Background()))
+
+	require.Len(t, rpc.requests, 1)
+	require.Len(t, rpc.requests[0].Filters, 1)
+	f := rpc.requests[0].Filters[0]
+	assert.Equal(t, []string{contractA}, f.ContractIDs)
+	// "transfer" encodes to the ScVal the RPC docs use, followed by a
+	// trailing wildcard so events with more topics still match.
+	assert.Equal(t, [][]string{{"AAAADwAAAAh0cmFuc2Zlcg==", "**"}}, f.Topics)
+}
+
+// TestPollLeavesContractUnfilteredWhenAnyRuleIsUnnamed is the safety half: a
+// single rule that matches unnamed events must keep the contract unfiltered,
+// because a narrowed filter would silently drop events that rule would match.
+func TestPollLeavesContractUnfilteredWhenAnyRuleIsUnnamed(t *testing.T) {
+	rpc := &fakeRPC{latest: 6000}
+	st := newFakeStore()
+	st.monitors = []store.Monitor{{ID: 1, Name: "m1", ContractIDs: []string{contractA}, Enabled: true}}
+	st.rules[1] = []store.Rule{
+		{ID: 1, MonitorID: 1, Type: rules.TypeEventEmitted, Params: json.RawMessage(`{"event_name": "transfer"}`), Enabled: true},
+		{ID: 2, MonitorID: 1, Type: rules.TypeValueThreshold, Params: json.RawMessage(`{"comparison": "gt", "threshold": 1}`), Enabled: true},
+	}
+	p := newTestPoller(rpc, st, &fakeDispatcher{})
+
+	require.NoError(t, p.Poll(context.Background()))
+
+	require.Len(t, rpc.requests, 1)
+	require.Len(t, rpc.requests[0].Filters, 1)
+	assert.Empty(t, rpc.requests[0].Filters[0].Topics, "a rule with no event_name forces an unfiltered request")
+}
+
+// TestPollFallsBackUnfilteredOnTopicCapOverflow checks the RPC's cap: more
+// distinct event names than a filter can express must fall back to unfiltered
+// rather than truncating, which would drop events.
+func TestPollFallsBackUnfilteredOnTopicCapOverflow(t *testing.T) {
+	rpc := &fakeRPC{latest: 6000}
+	st := newFakeStore()
+	st.monitors = []store.Monitor{{ID: 1, Name: "m1", ContractIDs: []string{contractA}, Enabled: true}}
+	for i, name := range []string{"a", "b", "c", "d", "e", "f"} {
+		st.rules[1] = append(st.rules[1], store.Rule{
+			ID: int64(i + 1), MonitorID: 1, Type: rules.TypeEventEmitted,
+			Params: json.RawMessage(fmt.Sprintf(`{"event_name": %q}`, name)), Enabled: true,
+		})
+	}
+	p := newTestPoller(rpc, st, &fakeDispatcher{})
+
+	require.NoError(t, p.Poll(context.Background()))
+
+	require.Len(t, rpc.requests, 1)
+	require.Len(t, rpc.requests[0].Filters, 1)
+	assert.Empty(t, rpc.requests[0].Filters[0].Topics, "six names exceed the five-filter cap")
+}
+
+// TestPollGroupsContractsByTopicFilter verifies contracts whose rules name
+// different events get their own filter, since a filter's topics apply to
+// every contract ID it carries.
+func TestPollGroupsContractsByTopicFilter(t *testing.T) {
+	contractB := contractID(0xB2)
+	rpc := &fakeRPC{latest: 6000}
+	st := newFakeStore()
+	st.monitors = []store.Monitor{
+		{ID: 1, Name: "m1", ContractIDs: []string{contractA}, Enabled: true},
+		{ID: 2, Name: "m2", ContractIDs: []string{contractB}, Enabled: true},
+	}
+	st.rules[1] = []store.Rule{{ID: 1, MonitorID: 1, Type: rules.TypeEventEmitted,
+		Params: json.RawMessage(`{"event_name": "transfer"}`), Enabled: true}}
+	st.rules[2] = []store.Rule{{ID: 2, MonitorID: 2, Type: rules.TypeEventEmitted,
+		Params: json.RawMessage(`{"event_name": "mint"}`), Enabled: true}}
+	p := newTestPoller(rpc, st, &fakeDispatcher{})
+
+	require.NoError(t, p.Poll(context.Background()))
+
+	require.Len(t, rpc.requests, 1)
+	require.Len(t, rpc.requests[0].Filters, 2)
+	topicsByContract := map[string][][]string{}
+	for _, f := range rpc.requests[0].Filters {
+		for _, id := range f.ContractIDs {
+			topicsByContract[id] = f.Topics
+		}
+	}
+	assert.Equal(t, [][]string{{"AAAADwAAAAh0cmFuc2Zlcg==", "**"}}, topicsByContract[contractA])
+	assert.Equal(t, [][]string{{"AAAADwAAAARtaW50", "**"}}, topicsByContract[contractB])
+}
+
+// TestPollLeavesWildcardTokenRulesUnfiltered covers a rule type whose "*"
+// event genuinely matches several events: it can still be named, so the filter
+// is built from the concrete SEP-41 names rather than dropped.
+func TestPollNamesWildcardTokenEvents(t *testing.T) {
+	rpc := &fakeRPC{latest: 6000}
+	st := newFakeStore()
+	st.monitors = []store.Monitor{{ID: 1, Name: "m1", ContractIDs: []string{contractA}, Enabled: true}}
+	st.rules[1] = []store.Rule{{ID: 1, MonitorID: 1, Type: rules.TypeTokenEvent,
+		Params: json.RawMessage(`{"event": "*"}`), Enabled: true}}
+	p := newTestPoller(rpc, st, &fakeDispatcher{})
+
+	require.NoError(t, p.Poll(context.Background()))
+
+	require.Len(t, rpc.requests, 1)
+	require.Len(t, rpc.requests[0].Filters, 1)
+	assert.Len(t, rpc.requests[0].Filters[0].Topics, 5, "the five SEP-41 events all become topic filters")
+}
+
+// TestPollFrequencyRuleFiresOncePerCrossing is the end-to-end shape of the
+// frequency rule: a burst that crosses the threshold yields one alert, stored
+// under the rule's synthetic window-start id so a replay is deduplicated too.
+func TestPollFrequencyRuleFiresOncePerCrossing(t *testing.T) {
+	st := newFakeStore()
+	st.state.LastLedger = 5500
+	st.monitors = []store.Monitor{{ID: 1, Name: "m1", ContractIDs: []string{contractA}, Enabled: true}}
+	st.rules[1] = []store.Rule{{ID: 1, MonitorID: 1, Type: rules.TypeFrequencyThreshold,
+		Params: json.RawMessage(`{"event_name": "transfer", "count": 3, "window": "5m"}`), Enabled: true}}
+	d := &fakeDispatcher{}
+
+	burst(t, st, d, "ev-1", "ev-2", "ev-3", "ev-4", "ev-5")
+
+	require.Len(t, st.alerts, 1, "the crossing yields exactly one alert")
+	require.Len(t, d.dispatched, 1)
+	assert.Contains(t, st.alerts[0].EventID, "frequency:",
+		"the alert is keyed by the synthetic episode id, not the crossing event")
+	assert.Equal(t, st.alerts[0].EventID, d.dispatched[0].EventID)
+}
+
+// TestPollIgnoresDisabledRulesWhenDerivingTopics makes sure a disabled rule
+// cannot force an unfiltered request for a contract whose enabled rules are
+// all named.
+func TestPollIgnoresDisabledRulesWhenDerivingTopics(t *testing.T) {
+	rpc := &fakeRPC{latest: 6000}
+	st := newFakeStore()
+	st.monitors = []store.Monitor{{ID: 1, Name: "m1", ContractIDs: []string{contractA}, Enabled: true}}
+	st.rules[1] = []store.Rule{
+		{ID: 1, MonitorID: 1, Type: rules.TypeEventEmitted, Params: json.RawMessage(`{"event_name": "transfer"}`), Enabled: true},
+		{ID: 2, MonitorID: 1, Type: rules.TypeEventEmitted, Params: json.RawMessage(`{}`), Enabled: false},
+	}
+	p := newTestPoller(rpc, st, &fakeDispatcher{})
+
+	require.NoError(t, p.Poll(context.Background()))
+
+	require.Len(t, rpc.requests, 1)
+	require.Len(t, rpc.requests[0].Filters, 1)
+	assert.Equal(t, [][]string{{"AAAADwAAAAh0cmFuc2Zlcg==", "**"}}, rpc.requests[0].Filters[0].Topics)
+}
