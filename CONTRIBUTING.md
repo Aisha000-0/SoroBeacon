@@ -45,7 +45,6 @@ The README has worked examples for channels and rules.
 
 ## Good first issues
 
-- API authentication (token middleware on `/api/v1`).
 - New rule types: absence-of-event ("no heartbeat for N minutes"),
   frequency ("more than N matches in M minutes").
 - New channels: Matrix, PagerDuty, ntfy.sh.

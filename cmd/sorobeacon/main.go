@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/sorotrail/sorobeacon/internal/api"
+	"github.com/sorotrail/sorobeacon/internal/auth"
 	"github.com/sorotrail/sorobeacon/internal/config"
 	"github.com/sorotrail/sorobeacon/internal/metrics"
 	"github.com/sorotrail/sorobeacon/internal/notify"
@@ -56,6 +57,15 @@ func run() error {
 		}
 	}
 	warnIfChannelConfigUnencrypted(log, cfg.ConfigEncryptionKey)
+
+	// Authentication. One authenticator is shared by the JSON API (bearer
+	// token) and the dashboard (a session cookie minted from the same
+	// tokens) so a single API_TOKEN covers both, and a session established
+	// at /login also satisfies the API middleware — the dashboard links
+	// straight to /api/v1/alerts.csv, which a browser fetches without
+	// headers. The tokens themselves are never logged.
+	authn := auth.New(cfg.APITokens, auth.DefaultSessionTTL)
+	warnIfAPITokenUnset(log, cfg.APITokens)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -123,12 +133,13 @@ func run() error {
 			Burst:          cfg.RateLimitBurst,
 			TrustForwarded: cfg.RateLimitTrustForwarded,
 		}).
-		WithMaxBodyBytes(cfg.HTTPMaxBodyBytes)
+		WithMaxBodyBytes(cfg.HTTPMaxBodyBytes).
+		WithAuth(authn)
 	webSrv, err := web.New(st, registry, factory, log)
 	if err != nil {
 		return err
 	}
-	webSrv.WithPoller(p).WithSilentAfter(cfg.MonitorSilentAfter)
+	webSrv.WithPoller(p).WithSilentAfter(cfg.MonitorSilentAfter).WithAuth(authn)
 	root := chi.NewRouter()
 	// RequestLog must sit outside Recoverer so a panic still emits the
 	// access line after chi writes 500. reqid first so the line can
@@ -187,6 +198,18 @@ func run() error {
 func warnIfChannelConfigUnencrypted(log *slog.Logger, key []byte) {
 	if len(key) == 0 {
 		log.Warn("channel config encryption is disabled; set CONFIG_ENCRYPTION_KEY to encrypt webhook URLs, bot tokens and SMTP credentials at rest")
+	}
+}
+
+// warnIfAPITokenUnset logs one warning at startup when API_TOKEN is unset.
+// Both the API and the dashboard stay open, which is how the docker-compose
+// quickstart and every existing deployment behave — so this is a warning and
+// not a startup failure. The operator should still know: an unauthenticated
+// API can create, rewrite and delete monitors and channels from anywhere the
+// port is reachable.
+func warnIfAPITokenUnset(log *slog.Logger, tokens []string) {
+	if len(tokens) == 0 {
+		log.Warn("API authentication is disabled; set API_TOKEN to require a bearer token on /api/v1 and a sign-in on the dashboard")
 	}
 }
 

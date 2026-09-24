@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "SoroBeacon API",
-    "description": "Monitoring and alerting for Stellar/Soroban contract events. All endpoints are mounted under /api/v1. The API is read-write for monitors, rules and channels; alerts are read-only.",
+    "description": "Monitoring and alerting for Stellar/Soroban contract events. All endpoints are mounted under /api/v1. The API is read-write for monitors, rules and channels; alerts are read-only.\n\nAuthentication: when API_TOKEN is configured, every endpoint below requires `Authorization: Bearer <token>` and answers 401 through the standard error envelope without one. The only exceptions are the probes /livez, /readyz and /health, which stay reachable so an orchestrator does not need the token. With API_TOKEN unset the API is open and none of this applies.",
     "version": "1.0.0",
     "license": {
       "name": "Apache-2.0"
@@ -12,6 +12,9 @@
     {
       "url": "/api/v1"
     }
+  ],
+  "security": [
+    { "bearerAuth": [] }
   ],
   "paths": {
     "/monitors": {
@@ -589,7 +592,8 @@
     "/health": {
       "get": {
         "summary": "Combined health report",
-        "description": "Legacy combined check; prefer /livez and /readyz.",
+        "description": "Legacy combined check; prefer /livez and /readyz. Exempt from authentication so probes and the docker-compose healthcheck keep working.",
+        "security": [],
         "responses": {
           "200": { "description": "Healthy" },
           "503": { "description": "Degraded" }
@@ -599,7 +603,8 @@
     "/livez": {
       "get": {
         "summary": "Liveness probe",
-        "description": "Answers 200 whenever the process can respond; checks no dependencies. Wire to livenessProbe.",
+        "description": "Answers 200 whenever the process can respond; checks no dependencies. Wire to livenessProbe. Exempt from authentication.",
+        "security": [],
         "responses": {
           "200": { "description": "Alive" }
         }
@@ -608,7 +613,8 @@
     "/readyz": {
       "get": {
         "summary": "Readiness probe",
-        "description": "Checks the database and the event source concurrently, bounded by a 3s timeout each, reporting per-dependency detail. Wire to readinessProbe.",
+        "description": "Checks the database and the event source concurrently, bounded by a 3s timeout each, reporting per-dependency detail. Wire to readinessProbe. Exempt from authentication, so its per-dependency detail is readable without a token — do not expose it to the public internet.",
+        "security": [],
         "responses": {
           "200": { "description": "Ready" },
           "503": { "description": "At least one dependency unhealthy" }
@@ -647,6 +653,13 @@
     }
   },
   "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "One of the static tokens from API_TOKEN (comma-separated to allow rotation). A dashboard session cookie from /login is accepted in the browser's own same-origin requests."
+      }
+    },
     "parameters": {
       "ID": {
         "name": "id",

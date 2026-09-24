@@ -126,8 +126,9 @@ channel's `config` JSON in the database. They are never logged and never
 returned by the API. Set `CONFIG_ENCRYPTION_KEY` to encrypt them at rest;
 see the [configuration guide](docs/getting-started/configuration.md#encrypting-channel-config-at-rest).
 
-> ⚠️ The API and dashboard have **no authentication** in the MVP. Run them on
-> a trusted network or behind a reverse proxy that adds auth.
+> ⚠️ With `API_TOKEN` unset the API and dashboard are **unauthenticated**.
+> Set it to require `Authorization: Bearer <token>` on `/api/v1` and a
+> sign-in on the dashboard, or keep the listener on a trusted network.
 
 ## HTTP API
 
@@ -311,7 +312,6 @@ Decoded events use a small value vocabulary (`nil`, `bool`, `string`,
 
 ### Open contributor issues (by design)
 
-- API authentication
 - More rule types (rate/frequency, absence-of-event, aggregation windows)
 - More channels (Matrix, PagerDuty, ntfy, ...)
 - A richer SPA dashboard (the current one is intentionally minimal)

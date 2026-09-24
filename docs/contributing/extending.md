@@ -73,7 +73,6 @@ Evaluators must be stateless and concurrency-safe. Decoded events use a small va
 
 ## Wanted (open by design)
 
-* API authentication middleware
 * Rule types: absence-of-event ("no heartbeat for N minutes"), frequency ("more than N matches in M minutes")
 * Channels: Matrix, PagerDuty, ntfy.sh
 * Contract-spec-aware decoding (named event fields via `stellar.Decoder`)

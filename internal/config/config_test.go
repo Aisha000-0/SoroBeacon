@@ -26,6 +26,7 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("SOROTRAIL_URL", "")
 	t.Setenv("CORS_ALLOWED_ORIGINS", "")
 	t.Setenv("CONFIG_ENCRYPTION_KEY", "")
+	t.Setenv("API_TOKEN", "")
 
 	cfg, err := Load()
 	require.NoError(t, err)
@@ -51,6 +52,7 @@ func TestLoadDefaults(t *testing.T) {
 	assert.Equal(t, time.Duration(0), cfg.AlertRetention)
 	assert.Equal(t, DefaultMonitorSilentAfter, cfg.MonitorSilentAfter)
 	assert.Nil(t, cfg.ConfigEncryptionKey)
+	assert.Empty(t, cfg.APITokens)
 }
 
 func TestLoadRequiresDatabaseURL(t *testing.T) {
@@ -412,7 +414,54 @@ func TestLogAttrsOptInDoesNotDumpWholeStruct(t *testing.T) {
 		"sorotrail_url",
 		"cors_allowed_origins",
 		"config_encryption_enabled",
+		"api_token_count",
 	}, keys)
+}
+
+func TestLoadAPITokens(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://x")
+
+	t.Setenv("API_TOKEN", "first")
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"first"}, cfg.APITokens)
+
+	// Two tokens at once is the rotation window: the new one is accepted
+	// before the old one is dropped.
+	t.Setenv("API_TOKEN", "old-token, new-token")
+	cfg, err = Load()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"old-token", "new-token"}, cfg.APITokens)
+}
+
+func TestLoadRejectsEmptyAPITokenList(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://x")
+
+	// A value that is present but unusable must not fall back to open
+	// access: the operator plainly meant to require a token.
+	for _, raw := range []string{",", "   ", ",,"} {
+		t.Setenv("API_TOKEN", raw)
+		_, err := Load()
+		assert.ErrorContains(t, err, "API_TOKEN")
+	}
+}
+
+// LogAttrs is the one place configuration is printed; a token is a
+// credential, so only the count may appear.
+func TestLogAttrsHidesAPITokens(t *testing.T) {
+	cfg := Config{DatabaseURL: "postgres://user:pw@host/db", APITokens: []string{"s3cret-token"}}
+
+	var dump strings.Builder
+	for _, a := range cfg.LogAttrs() {
+		dump.WriteString(a.Key)
+		dump.WriteByte('=')
+		dump.WriteString(a.Value.String())
+		dump.WriteByte('\n')
+	}
+	blob := dump.String()
+
+	assert.NotContains(t, blob, "s3cret-token")
+	assert.Contains(t, blob, "api_token_count=1")
 }
 
 func TestLoadConfigEncryptionKey(t *testing.T) {

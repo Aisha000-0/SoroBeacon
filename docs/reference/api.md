@@ -2,8 +2,35 @@
 
 Base path: `/api/v1`. All bodies are JSON. Errors return `{"error": "..."}` with an appropriate status code.
 
+## Authentication
+
+With `API_TOKEN` set, every endpoint below requires
+`Authorization: Bearer <token>` and answers `401` through the normal error
+envelope without it:
+
+```sh
+curl -s localhost:8080/api/v1/monitors -H "Authorization: Bearer $API_TOKEN"
+```
+
+* The tokens are the comma-separated values in `API_TOKEN`; any one of them is
+  accepted, which is what makes rotation possible without downtime. Comparison
+  is constant-time, and a missing header, a malformed header and a wrong token
+  all return the same `401 {\"error\":\"unauthorized\"}` — the response never
+  says which of those it was.
+* **Probes are exempt**: `GET /health`, `GET /livez` and `GET /readyz` require
+  no token, so an authenticated deployment cannot fail its own health checks
+  (or the docker-compose healthcheck). The trade-off is that `/readyz` reports
+  per-dependency detail — including dependency error strings — to anyone who
+  can reach the port. Do not expose those paths to the public internet.
+* A dashboard session cookie from `/login` is accepted too, so the dashboard's
+  own same-origin links (`/alerts.csv`, for one) work in a browser. A script
+  should send the bearer header instead.
+* With `API_TOKEN` unset the API is open, exactly as it was before
+  authentication existed, and the process logs one warning at startup.
+
 {% hint style="warning" %}
-No authentication in the MVP — treat the API as a trusted-network interface.
+An unauthenticated instance mutates monitors and channels for anyone who can
+reach the port. Set `API_TOKEN` on anything beyond a trusted network.
 {% endhint %}
 
 ## Monitors

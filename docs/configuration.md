@@ -20,9 +20,10 @@ and this page should be updated.
 | --- | --- | --- |
 | `DATABASE_URL` | **yes** | Connection string often embeds a password. Mode `0600` on disk; never commit a filled `.env`. |
 | `CONFIG_ENCRYPTION_KEY` | **yes** | Base64 AES-GCM key that encrypts channel `config` at rest. Losing it makes encrypted configs unrecoverable — back it up with the database. |
+| `API_TOKEN` | **yes** | Bearer token(s) for `/api/v1` and the dashboard sign-in. Anyone holding one can read and mutate everything, so treat it like a password: mode `0600` on disk, a secret manager in production, and never in a log line, ticket or shell history. |
 | `NETWORK_PASSPHRASE` | no (public nets) | SDF passphrases are public. For `NETWORK=custom` it identifies a private network — treat it as operational config, not a credential. |
 | `RPC_URL` / `SOROTRAIL_URL` | maybe | A URL is not a password, but provider URLs sometimes embed tokens in the path or query. Do not commit those. |
-| `CORS_ALLOWED_ORIGINS` | no | An allow-list, not a credential. Think hard before allowing a third-party origin: the API is unauthenticated. |
+| `CORS_ALLOWED_ORIGINS` | no | An allow-list, not a credential. Think hard before allowing a third-party origin: whatever credential that origin's users hold can act through their browser. |
 | everything else | no | |
 
 Channel `config` in the database is the place webhook URLs, bot tokens
@@ -35,6 +36,50 @@ column; see [Channel config encryption](#channel-config-encryption).
 | Variable | Type | Default | Required | What it does |
 | --- | --- | --- | --- | --- |
 | `DATABASE_URL` | URL string | _(none)_ | **required** | Postgres connection string in pgx form, e.g. `postgres://user:pass@host:5432/sorobeacon?sslmode=disable`. Load fails if it is empty. |
+
+## API authentication
+
+| Variable | Type | Default | Required | What it does |
+| --- | --- | --- | --- | --- |
+| `API_TOKEN` | comma-separated string | empty (authentication off) | optional | Static bearer token(s). Each value is accepted on every `/api/v1` route as `Authorization: Bearer <token>`, and any one of them signs in to the dashboard at `/login`. A list rather than a single value so a token can be rotated without downtime: add the new one, roll clients over, remove the old one. Values are trimmed; a token cannot contain a comma. |
+
+Generate one with `openssl rand -hex 32`. The token is a credential: it is never
+logged, never returned in an error body, and the access log records the matched
+route pattern rather than the raw URL, so a token smuggled into a query string
+is not written out either. Only the number of configured tokens appears in the
+startup log line (`api_token_count`).
+
+**Unset ⇒ open, with a warning.** With no `API_TOKEN`, `/api/v1` and the
+dashboard behave exactly as they did before authentication existed, and the
+process logs one warning at startup. That is deliberate: an upgrade, or the
+docker-compose quickstart, must never lock the operator out. A value that is
+set but yields no token (`,`, whitespace) is an error instead, because the
+operator plainly meant to require one.
+
+**Probes are exempt.** `GET /health`, `GET /livez` and `GET /readyz` need no
+token, so an authenticated deployment cannot fail its own health checks. Two
+consequences worth knowing: `/readyz` reports per-dependency detail (including
+dependency error strings) to anyone who can reach the port, and `/metrics` on
+the same listener is not authenticated at all. Keep both off the public
+internet.
+
+```sh
+# one token
+export API_TOKEN=$(openssl rand -hex 32)
+curl -s localhost:8080/api/v1/monitors -H "Authorization: Bearer $API_TOKEN"
+
+# rotation: both tokens work during the hand-over
+API_TOKEN="$OLD_TOKEN,$NEW_TOKEN"
+```
+
+### The dashboard
+
+The dashboard has no user accounts. `GET /login` asks for the token and, on
+success, sets an HttpOnly, `SameSite=Lax` session cookie (12 hours, in memory
+only — a restart signs everyone out). `SameSite=Lax` matters: it is why the
+dashboard's state-changing forms cannot be forged from another origin. The
+cookie's `Secure` flag follows the request, so it is set when SoroBeacon
+terminates TLS itself and absent on a plain-HTTP deployment.
 
 ## Channel config encryption
 
@@ -71,7 +116,7 @@ which network it is on and **refuses to start on a mismatch**.
 | Variable | Type | Default | Required | What it does |
 | --- | --- | --- | --- | --- |
 | `HTTP_ADDR` | listen address | `:8080` | optional | Bind address for the API and dashboard (and `/metrics`). |
-| `CORS_ALLOWED_ORIGINS` | comma-separated origins | empty (CORS disabled) | optional | Browser Origins allowed to call the API cross-origin. Empty disables CORS. The dashboard is same-origin and never needs this. The API is unauthenticated — do not allow untrusted origins. |
+| `CORS_ALLOWED_ORIGINS` | comma-separated origins | empty (CORS disabled) | optional | Browser Origins allowed to call the API cross-origin. Empty disables CORS. The dashboard is same-origin and never needs this. Do not allow origins you do not control: whatever credential their users hold can act through their browser. |
 
 ## Polling
 

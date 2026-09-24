@@ -22,6 +22,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/sorotrail/sorobeacon/internal/auth"
 	"github.com/sorotrail/sorobeacon/internal/buildinfo"
 	"github.com/sorotrail/sorobeacon/internal/notify"
 	"github.com/sorotrail/sorobeacon/internal/poller"
@@ -52,6 +53,10 @@ type Server struct {
 	// silentAfter is how long since last_matched_at before a monitor is
 	// marked silent on the list. Zero means the New default (24h).
 	silentAfter time.Duration
+	// auth gates every page on a dashboard session once a token is
+	// configured. Nil (until WithAuth, or with no API_TOKEN) leaves the
+	// dashboard open.
+	auth *auth.Authenticator
 }
 
 // monitorListRow is a monitor plus the last-matched cue rendered on the
@@ -164,7 +169,7 @@ func New(st store.Store, reg *rules.Registry, f *notify.Factory, log *slog.Logge
 		pages:       map[string]*template.Template{},
 		silentAfter: 24 * time.Hour,
 	}
-	for _, page := range []string{"index", "monitors", "monitor", "channels", "alerts", "alert", "error"} {
+	for _, page := range []string{"index", "monitors", "monitor", "channels", "alerts", "alert", "login", "error"} {
 		t, err := template.New("layout.html").Funcs(templateFuncs).ParseFS(templatesFS, "templates/layout.html", "templates/"+page+".html")
 		if err != nil {
 			return nil, fmt.Errorf("parse template %s: %w", page, err)
@@ -213,6 +218,13 @@ func (s *Server) monitorRows(monitors []store.Monitor, tz string, now time.Time)
 // Routes returns the dashboard router, mounted at / by cmd/sorobeacon.
 func (s *Server) Routes() chi.Router {
 	r := chi.NewRouter()
+	// Registered before any route, so the gate covers everything below it.
+	// With no token configured it is the identity function.
+	r.Use(s.authMiddleware())
+	r.Get(loginPath, s.loginPage)
+	r.Post(loginPath, s.login)
+	r.Post(logoutPath, s.logout)
+
 	r.Get("/", s.index)
 	r.Get("/favicon.ico", s.favicon)
 	r.Post("/theme", s.setTheme)
@@ -267,6 +279,10 @@ func (s *Server) renderStatus(w http.ResponseWriter, r *http.Request, status int
 		}
 		m["Theme"] = themeFromRequest(r)
 		m["Timezone"] = tzFromRequest(r)
+		// The sign-in page has nothing to sign out of, so it hides the header's
+		// sign-out button even though authentication is on.
+		m["AuthEnabled"] = s.authEnabled() && page != "login"
+		m["SessionHours"] = int(s.auth.SessionTTL().Hours())
 		m["Version"] = displayVersion(buildinfo.Version)
 		m["Commit"] = displayCommit(buildinfo.Commit)
 		m["CommitURL"] = commitURL(buildinfo.Commit)
