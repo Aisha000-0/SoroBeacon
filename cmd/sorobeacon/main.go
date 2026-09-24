@@ -18,6 +18,7 @@ import (
 	"github.com/sorotrail/sorobeacon/internal/api"
 	"github.com/sorotrail/sorobeacon/internal/auth"
 	"github.com/sorotrail/sorobeacon/internal/config"
+	sorogrpc "github.com/sorotrail/sorobeacon/internal/grpc"
 	"github.com/sorotrail/sorobeacon/internal/metrics"
 	"github.com/sorotrail/sorobeacon/internal/notify"
 	"github.com/sorotrail/sorobeacon/internal/poller"
@@ -30,6 +31,22 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "backup":
+			if err := runBackup(os.Args[2:]); err != nil {
+				slog.Error("backup failed", "err", err)
+				os.Exit(1)
+			}
+			return
+		case "restore":
+			if err := runRestore(os.Args[2:]); err != nil {
+				slog.Error("restore failed", "err", err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
 	if err := run(); err != nil {
 		slog.Error("fatal", "err", err)
 		os.Exit(1)
@@ -194,6 +211,14 @@ func run() error {
 		}
 	}()
 	go p.Run(ctx)
+	if cfg.GRPCAddr != "" {
+		grpcSrv := sorogrpc.New(st, authn, log)
+		go func() {
+			if err := grpcSrv.Serve(ctx, cfg.GRPCAddr); err != nil {
+				log.Error("grpc server error", "err", err)
+			}
+		}()
+	}
 	if cfg.AlertRetention > 0 {
 		go store.RunAlertPruner(ctx, st, cfg.AlertRetention, store.DefaultPruneInterval, store.DefaultPruneBatch, log)
 	}
