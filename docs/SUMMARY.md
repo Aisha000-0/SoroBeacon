@@ -39,6 +39,7 @@
 
 * [Backing up and restoring the database](operations/backup-restore.md)
 * [Capacity and scaling](operations/scaling.md)
+* [Poll priority, reorgs, retention and archiving](operations/retention-and-reorg.md)
 
 ## 🛠️ Reference
 
