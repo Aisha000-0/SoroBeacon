@@ -67,7 +67,30 @@ type Alert struct {
 	// alert row. Zero skips the stamp so callers that only persist an
 	// alert (tests, retries) do not invent a wall-clock match time.
 	LedgerClosedAt time.Time `json:"-"`
+	// Cooldown, when > 0, makes CreateAlert suppress this alert if the rule
+	// already fired within the window. It is rule config, not alert data, so
+	// it is never persisted on the alert row.
+	Cooldown time.Duration `json:"-"`
+	// SuppressedSinceLast is set by CreateAlert when a row is created: the
+	// number of matches this rule dropped under its cooldown since the
+	// previous alert. CreateAlert also folds it into Payload so the stored
+	// alert and the dispatched notification both report it.
+	SuppressedSinceLast int64 `json:"-"`
 }
+
+// AlertOutcome reports what CreateAlert did with a match.
+type AlertOutcome string
+
+const (
+	// AlertCreated means a new alert row was written.
+	AlertCreated AlertOutcome = "created"
+	// AlertDuplicate means an alert for the same (rule_id, event_id) already
+	// existed — the dedup guard — so nothing was written.
+	AlertDuplicate AlertOutcome = "duplicate"
+	// AlertSuppressed means the rule was inside its cooldown window, so the
+	// match was counted and no alert was written.
+	AlertSuppressed AlertOutcome = "suppressed"
+)
 
 // Status values persisted on delivery_attempts.status. Anything else is
 // rejected by the API; the store filters on these exact strings.
@@ -229,11 +252,15 @@ type Channels interface {
 
 // Alerts persists alerts and delivery attempts.
 type Alerts interface {
-	// CreateAlert inserts a new alert. It returns created=false (and no
-	// error) when an alert for the same (rule_id, event_id) already exists —
-	// the dedup guard. On a new row, a non-zero LedgerClosedAt is written
-	// to monitors.last_matched_at when it is newer than the stored value.
-	CreateAlert(ctx context.Context, a *Alert) (created bool, err error)
+	// CreateAlert inserts a new alert unless the rule is inside its cooldown
+	// window (Alert.Cooldown), in which case the match is counted and
+	// AlertSuppressed is returned. AlertDuplicate means the (rule_id,
+	// event_id) dedup guard rejected it. Enforcing both here, under the same
+	// transaction, keeps the decision race-safe across poller instances and
+	// restarts. On a new row, a non-zero LedgerClosedAt is written to
+	// monitors.last_matched_at when it is newer than the stored value, and
+	// Alert.SuppressedSinceLast is filled in.
+	CreateAlert(ctx context.Context, a *Alert) (AlertOutcome, error)
 	GetAlert(ctx context.Context, id int64) (*Alert, error)
 	ListAlerts(ctx context.Context, f AlertFilter) ([]Alert, error)
 	RecordDeliveryAttempt(ctx context.Context, d *DeliveryAttempt) error

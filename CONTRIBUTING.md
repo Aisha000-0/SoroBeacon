@@ -51,8 +51,6 @@ The README has worked examples for channels and rules.
 - New rule types: absence-of-event ("no heartbeat for N minutes"),
   frequency ("more than N matches in M minutes").
 - New channels: Matrix, PagerDuty, ntfy.sh.
-- Contract-spec-aware decoding: fetch the contract spec and decode events
-  into named fields behind `stellar.Decoder`.
 - Dashboard improvements (kept deliberately minimal in the MVP).
 
 ## Pull requests

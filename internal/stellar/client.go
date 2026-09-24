@@ -117,6 +117,23 @@ func (c *HTTPClient) GetNetwork(ctx context.Context) (*Network, error) {
 	return &res, nil
 }
 
+// GetLedgerEntries calls getLedgerEntries with base64-encoded XDR LedgerKeys.
+// It backs the spec fetcher, which reads a contract's instance and Wasm code.
+// The RPC does not support xdrFormat here in the versions SoroBeacon targets,
+// so entries always come back as base64 XDR.
+func (c *HTTPClient) GetLedgerEntries(ctx context.Context, keys []string) ([]LedgerEntryResult, error) {
+	var res struct {
+		Entries      []LedgerEntryResult `json:"entries"`
+		LatestLedger uint32              `json:"latestLedger"`
+	}
+	if err := c.call(ctx, "getLedgerEntries", struct {
+		Keys []string `json:"keys"`
+	}{Keys: keys}, &res); err != nil {
+		return nil, err
+	}
+	return res.Entries, nil
+}
+
 func (c *HTTPClient) call(ctx context.Context, method string, params, result any) error {
 	body, err := json.Marshal(struct {
 		JSONRPC string `json:"jsonrpc"`

@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -367,7 +369,7 @@ func TestMonitorLastMatchedAt(t *testing.T) {
 		MonitorID: m.ID, RuleID: r.ID, EventID: "ev-new", LedgerClosedAt: newer,
 	})
 	require.NoError(t, err)
-	assert.True(t, created)
+	assert.Equal(t, AlertCreated, created)
 
 	got, err = st.GetMonitor(ctx, m.ID)
 	require.NoError(t, err)
@@ -378,7 +380,7 @@ func TestMonitorLastMatchedAt(t *testing.T) {
 		MonitorID: m.ID, RuleID: r.ID, EventID: "ev-old", LedgerClosedAt: older,
 	})
 	require.NoError(t, err)
-	assert.True(t, created)
+	assert.Equal(t, AlertCreated, created)
 	got, err = st.GetMonitor(ctx, m.ID)
 	require.NoError(t, err)
 	require.NotNil(t, got.LastMatchedAt)
@@ -388,7 +390,7 @@ func TestMonitorLastMatchedAt(t *testing.T) {
 		MonitorID: m.ID, RuleID: r.ID, EventID: "ev-new", LedgerClosedAt: newer.Add(time.Hour),
 	})
 	require.NoError(t, err)
-	assert.False(t, created, "dedup must not restamp")
+	assert.Equal(t, AlertDuplicate, created, "dedup must not restamp")
 	got, err = st.GetMonitor(ctx, m.ID)
 	require.NoError(t, err)
 	require.NotNil(t, got.LastMatchedAt)
@@ -398,7 +400,7 @@ func TestMonitorLastMatchedAt(t *testing.T) {
 		MonitorID: m.ID, RuleID: r.ID, EventID: "ev-plain",
 	})
 	require.NoError(t, err)
-	assert.True(t, created)
+	assert.Equal(t, AlertCreated, created)
 	got, err = st.GetMonitor(ctx, m.ID)
 	require.NoError(t, err)
 	require.NotNil(t, got.LastMatchedAt)
@@ -417,7 +419,7 @@ func TestAlertDedupAndListing(t *testing.T) {
 	a := &Alert{MonitorID: m.ID, RuleID: r.ID, EventID: "ev-1", Payload: json.RawMessage(`{"k":"v"}`)}
 	created, err := st.CreateAlert(ctx, a)
 	require.NoError(t, err)
-	assert.True(t, created)
+	assert.Equal(t, AlertCreated, created)
 	assert.NotZero(t, a.ID)
 
 	got, err := st.GetAlert(ctx, a.ID)
@@ -432,12 +434,12 @@ func TestAlertDedupAndListing(t *testing.T) {
 	dup := &Alert{MonitorID: m.ID, RuleID: r.ID, EventID: "ev-1"}
 	created, err = st.CreateAlert(ctx, dup)
 	require.NoError(t, err)
-	assert.False(t, created, "same (rule_id, event_id) must dedup")
+	assert.Equal(t, AlertDuplicate, created, "same (rule_id, event_id) must dedup")
 
 	b := &Alert{MonitorID: m.ID, RuleID: r.ID, EventID: "ev-2"}
 	created, err = st.CreateAlert(ctx, b)
 	require.NoError(t, err)
-	assert.True(t, created)
+	assert.Equal(t, AlertCreated, created)
 
 	list, err := st.ListAlerts(ctx, AlertFilter{MonitorID: m.ID})
 	require.NoError(t, err)
@@ -454,6 +456,105 @@ func TestAlertDedupAndListing(t *testing.T) {
 	list, err = st.ListAlerts(ctx, AlertFilter{To: time.Now().Add(-time.Hour)})
 	require.NoError(t, err)
 	assert.Empty(t, list)
+}
+
+// TestCreateAlertCooldown covers the DB-side half of the cooldown: the window
+// is enforced against the rule row, the suppressed count is surfaced on the
+// next alert, and a zero cooldown leaves behaviour unchanged.
+func TestCreateAlertCooldown(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	m := &Monitor{Name: "m", ContractIDs: []string{"C"}, Enabled: true}
+	require.NoError(t, st.CreateMonitor(ctx, m))
+	r := &Rule{MonitorID: m.ID, Type: "event_emitted", Params: json.RawMessage(`{}`), Enabled: true}
+	require.NoError(t, st.CreateRule(ctx, r))
+
+	her := func(eventID string) *Alert {
+		return &Alert{
+			MonitorID: m.ID, RuleID: r.ID, EventID: eventID,
+			Payload: json.RawMessage(`{"event_name":"transfer"}`), Cooldown: 5 * time.Minute,
+		}
+	}
+
+	first := her("ev-1")
+	outcome, err := st.CreateAlert(ctx, first)
+	require.NoError(t, err)
+	assert.Equal(t, AlertCreated, outcome)
+	assert.Zero(t, first.SuppressedSinceLast)
+
+	// The burst is suppressed and counted, and nothing is written for it.
+	for _, id := range []string{"ev-2", "ev-3", "ev-4"} {
+		outcome, err := st.CreateAlert(ctx, her(id))
+		require.NoError(t, err)
+		assert.Equal(t, AlertSuppressed, outcome)
+	}
+
+	// The event that opened the window is a duplicate, not a fresh match, so a
+	// replay must not inflate the count.
+	outcome, err = st.CreateAlert(ctx, her("ev-1"))
+	require.NoError(t, err)
+	assert.Equal(t, AlertDuplicate, outcome)
+
+	// Move the window into the past instead of sleeping.
+	_, err = st.pool.Exec(ctx,
+		`UPDATE rules SET last_alert_at = now() - interval '10 minutes' WHERE id = $1`, r.ID)
+	require.NoError(t, err)
+
+	next := her("ev-5")
+	outcome, err = st.CreateAlert(ctx, next)
+	require.NoError(t, err)
+	require.Equal(t, AlertCreated, outcome)
+	assert.EqualValues(t, 3, next.SuppressedSinceLast, "the count of the three suppressed matches")
+
+	got, err := st.GetAlert(ctx, next.ID)
+	require.NoError(t, err)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(got.Payload, &payload))
+	assert.EqualValues(t, 3, payload["suppressed_since_last"], "the stored payload reports the count")
+
+	// A rule without a cooldown is unaffected even right after an alert.
+	plain := &Alert{MonitorID: m.ID, RuleID: r.ID, EventID: "ev-plain", Payload: json.RawMessage(`{}`)}
+	outcome, err = st.CreateAlert(ctx, plain)
+	require.NoError(t, err)
+	assert.Equal(t, AlertCreated, outcome)
+}
+
+// TestCreateAlertCooldownConcurrent models two pollers racing on the same rule:
+// the rule-row lock must let exactly one alert through per window.
+func TestCreateAlertCooldownConcurrent(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	m := &Monitor{Name: "m", ContractIDs: []string{"C"}, Enabled: true}
+	require.NoError(t, st.CreateMonitor(ctx, m))
+	r := &Rule{MonitorID: m.ID, Type: "event_emitted", Params: json.RawMessage(`{}`), Enabled: true}
+	require.NoError(t, st.CreateRule(ctx, r))
+
+	const n = 8
+	outcomes := make([]AlertOutcome, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			outcomes[i], errs[i] = st.CreateAlert(ctx, &Alert{
+				MonitorID: m.ID, RuleID: r.ID, EventID: fmt.Sprintf("ev-%d", i),
+				Payload: json.RawMessage(`{}`), Cooldown: time.Minute,
+			})
+		}()
+	}
+	wg.Wait()
+
+	created := 0
+	for i := range outcomes {
+		require.NoError(t, errs[i])
+		if outcomes[i] == AlertCreated {
+			created++
+		}
+	}
+	assert.Equal(t, 1, created, "exactly one alert may fire inside the window")
 }
 
 func TestListAlertsSearchFilterSort(t *testing.T) {
@@ -491,7 +592,7 @@ func TestListAlertsSearchFilterSort(t *testing.T) {
 		}
 		ok, err := st.CreateAlert(ctx, a)
 		require.NoError(t, err)
-		require.True(t, ok)
+		require.Equal(t, AlertCreated, ok)
 		created = append(created, *a)
 	}
 

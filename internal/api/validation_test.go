@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/sorotrail/sorobeacon/internal/store"
@@ -52,6 +53,10 @@ func (v *validationStore) CreateChannel(_ context.Context, ch *store.Channel) er
 	v.createdChannels++
 	ch.ID = int64(v.createdChannels)
 	return nil
+}
+
+func (v *validationStore) GetChannel(_ context.Context, id int64) (*store.Channel, error) {
+	return &store.Channel{ID: id, Name: "existing", Type: "slack", Enabled: true}, nil
 }
 
 func (v *validationStore) SetMonitorsEnabled(_ context.Context, ids []int64, _ bool) (int, []int64, error) {
@@ -239,6 +244,83 @@ func TestCreateChannel_MultipleValidationDetails(t *testing.T) {
 		got[d.Field] = d.Reason
 	}
 	if got["name"] != "name is required" || got["type"] != "type is required" {
+		t.Fatalf("details = %+v", env.Details)
+	}
+}
+
+// TestCreateChannel_RejectsInvalidTemplate proves a template with a syntax
+// error is caught when the channel is created (a 400 naming the parse error),
+// rather than at delivery time.
+func TestCreateChannel_RejectsInvalidTemplate(t *testing.T) {
+	res, env := postJSON(t, "/channels", map[string]any{
+		"name": "ops-slack",
+		"type": "slack",
+		"config": map[string]any{
+			"webhook_url": "https://hooks.slack.com/services/T/B/X",
+			"template":    "{{.MonitorName",
+		},
+	})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", res.StatusCode)
+	}
+	if len(env.Details) != 1 || env.Details[0].Field != "config" {
+		t.Fatalf("details = %+v", env.Details)
+	}
+	if !strings.Contains(env.Details[0].Reason, "invalid template") {
+		t.Fatalf("reason = %q, want the parse error", env.Details[0].Reason)
+	}
+}
+
+// TestCreateRule_RejectsInvalidCooldown proves the cross-cutting cooldown is
+// validated when the rule is created, not discovered when a burst starts.
+func TestCreateRule_RejectsInvalidCooldown(t *testing.T) {
+	res, env := postJSON(t, "/monitors/1/rules", map[string]any{
+		"type":   "event_emitted",
+		"params": map[string]any{"event_name": "transfer", "cooldown": "5 minutes"},
+	})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", res.StatusCode)
+	}
+	if len(env.Details) != 1 || env.Details[0].Field != "params.cooldown" {
+		t.Fatalf("details = %+v, want a params.cooldown detail", env.Details)
+	}
+}
+
+// TestUpdateChannel_RejectsInvalidTemplate covers the other write path: a bad
+// template sent on update is rejected before it is persisted.
+func TestUpdateChannel_RejectsInvalidTemplate(t *testing.T) {
+	st := &validationStore{}
+	srv := httptest.NewServer(newProbeServer(st, &fakeRPC{}))
+	t.Cleanup(srv.Close)
+
+	body, err := json.Marshal(map[string]any{
+		"config": map[string]any{
+			"webhook_url": "https://hooks.slack.com/services/T/B/X",
+			"template":    "{{.MonitorName",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPatch, srv.URL+"/channels/1", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+
+	raw, _ := io.ReadAll(res.Body)
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body %s", res.StatusCode, raw)
+	}
+	var env errorEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("decode: %v\nbody: %s", err, raw)
+	}
+	if len(env.Details) != 1 || !strings.Contains(env.Details[0].Reason, "invalid template") {
 		t.Fatalf("details = %+v", env.Details)
 	}
 }

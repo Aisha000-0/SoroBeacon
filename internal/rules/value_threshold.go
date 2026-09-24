@@ -76,7 +76,20 @@ func (ValueThreshold) Evaluate(_ context.Context, ev *stellar.DecodedEvent, para
 	if p.EventName != "" && ev.EventName() != p.EventName {
 		return false, nil
 	}
-	raw, found := stellar.Lookup(ev.Value, p.ValuePath)
+	// When the contract's spec was available, the event carries named fields
+	// and value_path addresses those first; otherwise it keeps addressing the
+	// raw positional value, exactly as before. An empty value_path, or a path
+	// the spec does not name, falls back to the raw value so a rule that
+	// omits value_path (documented as valid when the value itself is the
+	// number) keeps matching events from a contract that now has a spec.
+	var raw any
+	var found bool
+	if ev.Fields != nil && p.ValuePath != "" {
+		raw, found = stellar.Lookup(ev.Fields, p.ValuePath)
+	}
+	if !found {
+		raw, found = stellar.Lookup(ev.Value, p.ValuePath)
+	}
 	if !found {
 		return false, nil
 	}

@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"text/template"
 	"time"
@@ -109,6 +110,51 @@ func RenderText(a Alert) (string, error) {
 	var b strings.Builder
 	if err := defaultTemplate.Execute(&b, a); err != nil {
 		return "", fmt.Errorf("render alert message: %w", err)
+	}
+	return b.String(), nil
+}
+
+// channelTemplate is an optional per-channel override of the plain-text
+// message. It is parsed once, when the channel's config is constructed, so a
+// syntax error is rejected when the channel is created or updated (an HTTP
+// 400 naming the parse error) rather than discovered at delivery time.
+//
+// The data is the exported Alert struct: a template may reference any of its
+// fields (see docs/channels/templates.md for the list). text/template is used
+// deliberately, not html/template: the destination owns escaping for its own
+// rendering context, so field values are inserted verbatim.
+//
+// The zero value means "no override": render then falls back to RenderText.
+type channelTemplate struct {
+	tpl *template.Template
+}
+
+// parseChannelTemplate compiles a channel's optional template. An empty (or
+// whitespace-only) string means no override. The error wraps the parser's
+// message so the API can return it to the operator.
+func parseChannelTemplate(raw string) (channelTemplate, error) {
+	if strings.TrimSpace(raw) == "" {
+		return channelTemplate{}, nil
+	}
+	tpl, err := template.New("alert").Parse(raw)
+	if err != nil {
+		return channelTemplate{}, fmt.Errorf("invalid template: %w", err)
+	}
+	return channelTemplate{tpl: tpl}, nil
+}
+
+// render executes the override, or the default message when none is set. A
+// template that parses but fails at execution — an unknown field, a bad index
+// into a slice — falls back to the default and logs a warning: an alert must
+// never be dropped over a formatting mistake.
+func (t channelTemplate) render(a Alert) (string, error) {
+	if t.tpl == nil {
+		return RenderText(a)
+	}
+	var b strings.Builder
+	if err := t.tpl.Execute(&b, a); err != nil {
+		slog.Warn("channel template failed to execute; using the default message", "err", err)
+		return RenderText(a)
 	}
 	return b.String(), nil
 }
