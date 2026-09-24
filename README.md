@@ -3,9 +3,10 @@
 **Monitoring and alerting for Soroban smart contracts.** Point SoroBeacon at
 one or more contracts on Stellar, define rules ("this event fired", "an
 emitted value crossed a threshold", "more than N in M minutes"), and get alerts
-on Discord, Slack, Telegram, Matrix, PagerDuty, email, or any webhook — with a
-small dashboard to manage monitors
-and review alert history.
+on Discord, Slack, Telegram, Matrix, PagerDuty, email, any webhook, or
+federate to another SoroBeacon instance — with a small dashboard to manage
+monitors and review alert history, a gRPC streaming API for machine-to-machine
+integration, and a Terraform provider for infrastructure-as-code.
 
 Stellar has no good open-source way to watch a contract and get notified when
 something happens on it. SoroBeacon aims to be that missing public good for
