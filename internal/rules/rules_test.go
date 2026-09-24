@@ -205,6 +205,31 @@ func TestValueThreshold(t *testing.T) {
 			want: true,
 		},
 		{
+			// A rule that predates the spec (no value_path) must keep
+			// matching the raw value even when the contract now exports a
+			// spec, otherwise making a contract spec-aware would silently
+			// stop existing alerts from firing.
+			name:   "bare value still matches when a spec is present",
+			params: `{"comparison": "gte", "threshold": 10}`,
+			event: &stellar.DecodedEvent{
+				Value:  big.NewInt(10),
+				Fields: map[string]any{"admin": "GADMIN"},
+			},
+			want: true,
+		},
+		{
+			// Named fields win when the path resolves there, but a path the
+			// spec does not name falls back to the raw value so a positional
+			// rule keeps working.
+			name:   "unmapped path falls back to the raw value",
+			params: `{"comparison": "gt", "threshold": 1, "value_path": "amount"}`,
+			event: &stellar.DecodedEvent{
+				Value:  map[string]any{"amount": big.NewInt(50)},
+				Fields: map[string]any{"admin": "GADMIN"},
+			},
+			want: true,
+		},
+		{
 			name:    "invalid comparison errors",
 			params:  `{"comparison": "wat", "threshold": 1}`,
 			event:   transferEvent(50),
