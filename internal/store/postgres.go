@@ -830,6 +830,41 @@ func (p *Postgres) GetStats(ctx context.Context) (Stats, error) {
 	return s, err
 }
 
+func (p *Postgres) AlertCountsByDay(ctx context.Context, days int) ([]AlertDayCount, error) {
+	days = ClampAlertSeriesDays(days)
+	// generate_series fills every UTC calendar day in the window, including
+	// zeroes, so a quiet day is an explicit 0 rather than a missing bar.
+	// date_trunc / ::date run on (timestamptz AT TIME ZONE 'UTC') so the
+	// session TimeZone cannot shift a late-UTC event into the next local day.
+	rows, err := p.pool.Query(ctx, `
+		WITH days AS (
+			SELECT generate_series(
+				((now() AT TIME ZONE 'UTC')::date - ($1::int - 1)),
+				(now() AT TIME ZONE 'UTC')::date,
+				interval '1 day'
+			)::date AS day
+		)
+		SELECT days.day, COUNT(a.id)::bigint
+		FROM days
+		LEFT JOIN alerts a ON (a.created_at AT TIME ZONE 'UTC')::date = days.day
+		GROUP BY days.day
+		ORDER BY days.day`, days)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]AlertDayCount, 0, days)
+	for rows.Next() {
+		var day time.Time
+		var count int64
+		if err := rows.Scan(&day, &count); err != nil {
+			return nil, err
+		}
+		out = append(out, AlertDayCount{Day: day.UTC().Format("2006-01-02"), Count: count})
+	}
+	return out, rows.Err()
+}
+
 // --- helpers ---
 
 func (p *Postgres) deleteByID(ctx context.Context, table string, id int64) error {

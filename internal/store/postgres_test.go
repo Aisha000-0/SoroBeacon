@@ -800,6 +800,65 @@ func TestGetStats(t *testing.T) {
 	assert.Equal(t, int64(1), stats.AlertsLast24)
 }
 
+func TestAlertCountsByDayZeroFillAndWindow(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	empty, err := st.AlertCountsByDay(ctx, AlertSeriesDays)
+	require.NoError(t, err)
+	require.Len(t, empty, AlertSeriesDays)
+	for _, d := range empty {
+		assert.Equal(t, int64(0), d.Count, d.Day)
+		_, parseErr := time.Parse("2006-01-02", d.Day)
+		require.NoError(t, parseErr)
+	}
+	today := time.Now().UTC()
+	assert.Equal(t, today.Format("2006-01-02"), empty[len(empty)-1].Day)
+	assert.Equal(t, today.AddDate(0, 0, -(AlertSeriesDays-1)).Format("2006-01-02"), empty[0].Day)
+
+	m := &Monitor{Name: "m", ContractIDs: []string{"C"}, Enabled: true}
+	require.NoError(t, st.CreateMonitor(ctx, m))
+	r := &Rule{MonitorID: m.ID, Type: "event_emitted", Params: json.RawMessage(`{}`), Enabled: true}
+	require.NoError(t, st.CreateRule(ctx, r))
+
+	noon := func(offsetDays int) time.Time {
+		d := today.AddDate(0, 0, offsetDays)
+		return time.Date(d.Year(), d.Month(), d.Day(), 12, 0, 0, 0, time.UTC)
+	}
+	seed := func(eventID string, at time.Time) {
+		t.Helper()
+		a := &Alert{MonitorID: m.ID, RuleID: r.ID, EventID: eventID}
+		_, err := st.CreateAlert(ctx, a)
+		require.NoError(t, err)
+		_, err = st.pool.Exec(ctx, `UPDATE alerts SET created_at = $1 WHERE id = $2`, at, a.ID)
+		require.NoError(t, err)
+	}
+	seed("today-a", noon(0))
+	seed("today-b", noon(0))
+	seed("gap-minus-2", noon(-2))
+	seed("too-old", noon(-31))
+
+	series, err := st.AlertCountsByDay(ctx, AlertSeriesDays)
+	require.NoError(t, err)
+	require.Len(t, series, AlertSeriesDays)
+	byDay := map[string]int64{}
+	for _, d := range series {
+		byDay[d.Day] = d.Count
+	}
+	assert.Equal(t, int64(2), byDay[today.Format("2006-01-02")])
+	assert.Equal(t, int64(0), byDay[today.AddDate(0, 0, -1).Format("2006-01-02")], "gap day must be an explicit zero")
+	assert.Equal(t, int64(1), byDay[today.AddDate(0, 0, -2).Format("2006-01-02")])
+	_, tooOld := byDay[today.AddDate(0, 0, -31).Format("2006-01-02")]
+	assert.False(t, tooOld, "alerts older than the window must not appear")
+}
+
+func TestClampAlertSeriesDays(t *testing.T) {
+	assert.Equal(t, AlertSeriesDays, ClampAlertSeriesDays(0))
+	assert.Equal(t, AlertSeriesDays, ClampAlertSeriesDays(-3))
+	assert.Equal(t, 7, ClampAlertSeriesDays(7))
+	assert.Equal(t, 90, ClampAlertSeriesDays(1000))
+}
+
 func TestCopyMonitorName(t *testing.T) {
 	assert.Equal(t, "m (copy)", CopyMonitorName("m", nil))
 	assert.Equal(t, "m (copy)", CopyMonitorName("m", []string{"m"}))

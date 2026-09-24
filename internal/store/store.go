@@ -184,6 +184,30 @@ type Stats struct {
 	LastPollAt   time.Time `json:"last_poll_at"`
 }
 
+// AlertSeriesDays is the overview chart window: today (UTC) and the 29
+// preceding UTC days. A spike only shows up against that quiet baseline.
+const AlertSeriesDays = 30
+
+// AlertDayCount is one UTC calendar-day bucket of alert totals.
+type AlertDayCount struct {
+	// Day is YYYY-MM-DD in UTC.
+	Day   string `json:"day"`
+	Count int64  `json:"count"`
+}
+
+// ClampAlertSeriesDays maps a caller-supplied window onto a bounded range.
+// Non-positive values become AlertSeriesDays so a missing query param cannot
+// collapse the series; 90 is a hard cap so a typo cannot scan unbounded history.
+func ClampAlertSeriesDays(days int) int {
+	if days <= 0 {
+		return AlertSeriesDays
+	}
+	if days > 90 {
+		return 90
+	}
+	return days
+}
+
 // Monitors persists monitors and their channel attachments.
 type Monitors interface {
 	CreateMonitor(ctx context.Context, m *Monitor) error
@@ -287,6 +311,10 @@ type Store interface {
 	Alerts
 	Ingest
 	GetStats(ctx context.Context) (Stats, error)
+	// AlertCountsByDay returns UTC calendar-day alert totals for `days`
+	// consecutive days ending today (UTC). Days with no alerts are present
+	// with count 0 so a chart has no gaps. Bucketing is done in SQL.
+	AlertCountsByDay(ctx context.Context, days int) ([]AlertDayCount, error)
 	Ping(ctx context.Context) error
 	Close()
 }

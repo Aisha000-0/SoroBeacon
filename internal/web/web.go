@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"html/template"
 	"log/slog"
 	"net/http"
@@ -531,6 +532,11 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	series, err := s.store.AlertCountsByDay(r.Context(), store.AlertSeriesDays)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
 	names := map[int64]string{}
 	for _, m := range monitors {
 		names[m.ID] = m.Name
@@ -538,6 +544,7 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	data := map[string]any{
 		"Title": "Overview", "Stats": stats, "Alerts": alerts, "MonitorNames": names,
 		"Empty": emptyKind(monitors, channels, alerts),
+		"AlertChart": alertChartSVG(series),
 	}
 	if s.poller != nil {
 		if pos := s.poller.Position(); pos.Ready() {
@@ -545,6 +552,51 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.render(w, r, "index", data)
+}
+
+// alertChartSVG draws a 30-day (or shorter) bar series as inline SVG so the
+// dashboard does not take a JavaScript charting dependency. An all-zero
+// series returns empty HTML: a flat axis would look like a missing chart.
+func alertChartSVG(days []store.AlertDayCount) template.HTML {
+	if len(days) == 0 {
+		return ""
+	}
+	var max int64
+	for _, d := range days {
+		if d.Count > max {
+			max = d.Count
+		}
+	}
+	if max == 0 {
+		return ""
+	}
+	const (
+		width  = 300.0
+		height = 88.0
+		padT   = 6.0
+		padB   = 18.0
+	)
+	innerH := height - padT - padB
+	barW := width / float64(len(days))
+	var b strings.Builder
+	fmt.Fprintf(&b,
+		`<svg class="alert-chart-svg" viewBox="0 0 %g %g" role="img" aria-label="Daily alert counts for the last %d days, UTC">`,
+		width, height, len(days))
+	for i, d := range days {
+		bh := innerH * float64(d.Count) / float64(max)
+		x := float64(i)*barW + 1
+		y := padT + innerH - bh
+		title := html.EscapeString(fmt.Sprintf("%s: %d", d.Day, d.Count))
+		fmt.Fprintf(&b,
+			`<rect x="%g" y="%g" width="%g" height="%g"><title>%s</title></rect>`,
+			x, y, barW-2, bh, title)
+	}
+	first := html.EscapeString(days[0].Day)
+	last := html.EscapeString(days[len(days)-1].Day)
+	fmt.Fprintf(&b,
+		`<text x="0" y="%g" font-size="8">%s</text><text x="%g" y="%g" font-size="8" text-anchor="end">%s</text></svg>`,
+		height-4, first, width, height-4, last)
+	return template.HTML(b.String())
 }
 
 func (s *Server) monitors(w http.ResponseWriter, r *http.Request) {
