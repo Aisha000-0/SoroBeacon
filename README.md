@@ -85,6 +85,7 @@ vs optional, secrets, and `SOURCE_MODE`-only notes — is
 | `SOROTRAIL_URL` | —                                      | SoroTrail indexer base URL (upstream mode)   |
 | `NETWORK`       | `testnet`                              | `testnet` \| `mainnet` \| `futurenet` \| `custom` |
 | `RPC_URL`       | per network                            | Stellar RPC endpoint; overrides the preset   |
+| `RPC_URLS`      | _(none — `RPC_URL` is used)_           | Ordered, comma-separated endpoints to fail over between; takes priority over `RPC_URL` |
 | `NETWORK_PASSPHRASE` | per network                       | Overrides the network passphrase             |
 | `DATABASE_URL`  | *(required)*                           | Backend URL by scheme: Postgres (`postgres` / `postgresql`) or a single-file SQLite database (`sqlite:///path/to/sorobeacon.db`); validated at load |
 | `DATABASE_MAX_CONNS` | pgx default                       | Pool max connections (`0` = driver default)  |
@@ -115,6 +116,17 @@ for private standalone networks. At startup SoroBeacon asks the RPC which
 network it belongs to and **refuses to start on a mismatch**, so a mainnet
 endpoint behind testnet configuration fails fast instead of silently
 evaluating every monitor against the wrong chain.
+
+Set `RPC_URLS` to a comma-separated, ordered list and SoroBeacon fails over
+between the endpoints instead of staking the alert stream on one of them.
+Transport errors, `429`s and `5xx`s quarantine an endpoint with an
+exponential backoff and retry the call on the next one; a `4xx` or a
+JSON-RPC error does not, because it would fail identically everywhere. A
+quarantined endpoint is probed again once its backoff expires, and a
+successful probe puts it back in rotation. Every endpoint in the list is
+checked at startup and **a mixed-network list is fatal** — failover would
+otherwise interleave two chains' events. `RPC_URL` keeps working unchanged
+as the single-endpoint case; never set both.
 
 ### Operating modes
 
@@ -377,6 +389,7 @@ Layout:
 
 ```
 cmd/sorobeacon      wiring + graceful shutdown, CLI subcommands (cli*.go)
+cmd/sorobeacon      wiring + graceful shutdown
 internal/config     env config
 internal/stellar    RPC client (getEvents/getLatestLedger/getHealth) + ScVal decoder
 internal/store      Postgres (pgx) + embedded golang-migrate migrations
@@ -392,6 +405,8 @@ internal/apiclient  HTTP client for the API, shared by the CLI
 `cmd/sorobeacon` also contains the CLI subcommands (`cli*.go`); they talk to a
 running instance only through `internal/apiclient`, so the CLI and the API
 cannot drift apart.
+
+```
 
 ### Adding a notification channel
 
