@@ -1,10 +1,12 @@
 // Command sorobeacon runs the SoroBeacon monitoring service: the event
-// poller, the JSON API and the dashboard, all in one process.
+// poller, the JSON API and the dashboard, all in one process. Given any
+// argument it acts as a CLI for a running instance instead — see cli.go.
 package main
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -31,22 +33,20 @@ import (
 	"github.com/sorotrail/sorobeacon/internal/web"
 )
 
+// main dispatches on the arguments. With none, the binary is the monitoring
+// service — how the container image and every existing deployment invoke it.
+// With any, it is a client for a running instance, so bootstrapping and
+// scripted changes stop needing a curl script. An unrecognised command is an
+// error rather than a silent server start, because a typo'd subcommand is
+// otherwise impossible to notice.
 func main() {
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "backup":
-			if err := runBackup(os.Args[2:]); err != nil {
-				slog.Error("backup failed", "err", err)
-				os.Exit(1)
-			}
-			return
-		case "restore":
-			if err := runRestore(os.Args[2:]); err != nil {
-				slog.Error("restore failed", "err", err)
-				os.Exit(1)
-			}
-			return
+	args := os.Args[1:]
+	if len(args) > 0 {
+		if err := runCLI(context.Background(), args, os.Stdout); err != nil {
+			reportCLIError(os.Stderr, err)
+			os.Exit(1)
 		}
+		return
 	}
 	if err := run(); err != nil {
 		slog.Error("fatal", "err", err)
@@ -127,20 +127,28 @@ func run() error {
 		health = stc
 		log.Info("upstream mode: reading events from SoroTrail", "url", cfg.SoroTrailURL)
 	default: // "rpc"
-		rpc := stellar.NewHTTPClient(cfg.RPCURL, nil)
+		// Several endpoints behind one Client: calls try them in the order
+		// RPC_URLS lists them and fail over when one rate-limits or goes
+		// down. The poller, the spec source and the readiness probe all
+		// keep talking to a single stellar.Client, so nothing downstream
+		// knows the difference.
+		rpc := stellar.NewFailoverClient(cfg.RPCURLs, nil, log)
 
-		// Verify the RPC endpoint really is the configured network before
-		// any monitor starts evaluating events. A mainnet endpoint behind
-		// a testnet config (or the reverse) silently evaluates every rule
-		// against the wrong chain — this fails fast instead. There is no
-		// equivalent check in upstream mode: the indexer's own deployment
-		// owns its network.
-		if net, err := rpc.GetNetwork(ctx); err != nil {
-			log.Warn("could not verify network passphrase", "error", err)
-		} else if err := config.VerifyPassphrase(cfg.Network.Passphrase, net.Passphrase); err != nil {
+		// Verify every RPC endpoint really is the configured network before
+		// any monitor starts evaluating events. A mainnet endpoint behind a
+		// testnet config (or the reverse) silently evaluates every rule
+		// against the wrong chain, and because failover picks a node per
+		// call, one mixed endpoint would corrupt the alert stream
+		// intermittently — the hardest kind of bug to notice. This fails
+		// fast instead. There is no equivalent check in upstream mode: the
+		// indexer's own deployment owns its network.
+		if err := verifyNetworkEndpoints(ctx, log, rpc, cfg.Network.Passphrase); err != nil {
 			return err
 		}
-		log.Info("network verified", "network", cfg.Network.Name, "rpc_url", cfg.RPCURL)
+		log.Info("network verified",
+			"network", cfg.Network.Name,
+			"rpc_url", cfg.RPCURL,
+			"rpc_endpoint_count", len(cfg.RPCURLs))
 
 		// Contract specs are fetched lazily per contract and cached, so
 		// events from a contract with a spec arrive with named fields while
@@ -291,6 +299,38 @@ func warnIfAPITokenUnset(log *slog.Logger, tokens []string) {
 	if len(tokens) == 0 {
 		log.Warn("API authentication is disabled; set API_TOKEN to require a bearer token on /api/v1 and a sign-in on the dashboard")
 	}
+}
+
+// startupNetworkTimeout bounds the startup passphrase sweep across every
+// configured endpoint, so a set of unreachable endpoints delays boot by at
+// most this long rather than once per endpoint's own HTTP timeout.
+const startupNetworkTimeout = 15 * time.Second
+
+// verifyNetworkEndpoints asks every configured RPC endpoint which network it
+// belongs to and refuses to start if any of them reports a passphrase other
+// than the configured one. Failover spreads requests over the whole list, so
+// a list that spans two networks would emit a mixture of events from both
+// chains — this is the check that stops it.
+//
+// An endpoint that cannot be reached is logged and skipped rather than fatal:
+// unreachability is precisely what failover exists for, and an endpoint that
+// is down at boot may well be the healthy one a minute later. Only a wrong
+// answer is fatal.
+func verifyNetworkEndpoints(ctx context.Context, log *slog.Logger, client *stellar.FailoverClient, configured string) error {
+	ctx, cancel := context.WithTimeout(ctx, startupNetworkTimeout)
+	defer cancel()
+
+	for _, ep := range client.Endpoints() {
+		net, err := ep.Client.GetNetwork(ctx)
+		if err != nil {
+			log.Warn("could not verify network passphrase", "rpc_url", ep.URL, "error", err)
+			continue
+		}
+		if err := config.VerifyPassphrase(configured, net.Passphrase); err != nil {
+			return fmt.Errorf("rpc endpoint %s: %w", ep.URL, err)
+		}
+	}
+	return nil
 }
 
 // startupHealthTimeout bounds the one-off health check logged at startup,
