@@ -41,12 +41,17 @@ import (
 // error rather than a silent server start, because a typo'd subcommand is
 // otherwise impossible to notice.
 func main() {
-	// `sorobeacon backfill` is an opt-in one-shot that replays history for a
-	// single monitor; everything else runs the long-lived service.
-	if len(os.Args) > 1 && os.Args[1] == "backfill" {
-		if err := runBackfill(os.Args[2:]); err != nil {
-			slog.Error("backfill failed", "err", err)
 	args := os.Args[1:]
+	// `sorobeacon backfill` is an opt-in one-shot that replays history for a
+	// single monitor; any other argument is a client command against a
+	// running instance.
+	if len(args) > 0 && args[0] == "backfill" {
+		if err := runBackfill(args[1:]); err != nil {
+			slog.Error("backfill failed", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(args) > 0 {
 		if err := runCLI(context.Background(), args, os.Stdout); err != nil {
 			reportCLIError(os.Stderr, err)
@@ -129,45 +134,6 @@ func run() error {
 	src, health, err := buildSource(ctx, log, cfg)
 	if err != nil {
 		return err
-	// the single seam between the poller and wherever events come from.
-	var src poller.EventSource
-	var health api.HealthChecker
-	switch cfg.SourceMode {
-	case "sorotrail":
-		stc := sorotrail.NewClient(cfg.SoroTrailURL, nil)
-		src = sorotrail.NewSource(stc)
-		health = stc
-		log.Info("upstream mode: reading events from SoroTrail", "url", cfg.SoroTrailURL)
-	default: // "rpc"
-		// Several endpoints behind one Client: calls try them in the order
-		// RPC_URLS lists them and fail over when one rate-limits or goes
-		// down. The poller, the spec source and the readiness probe all
-		// keep talking to a single stellar.Client, so nothing downstream
-		// knows the difference.
-		rpc := stellar.NewFailoverClient(cfg.RPCURLs, nil, log)
-
-		// Verify every RPC endpoint really is the configured network before
-		// any monitor starts evaluating events. A mainnet endpoint behind a
-		// testnet config (or the reverse) silently evaluates every rule
-		// against the wrong chain, and because failover picks a node per
-		// call, one mixed endpoint would corrupt the alert stream
-		// intermittently — the hardest kind of bug to notice. This fails
-		// fast instead. There is no equivalent check in upstream mode: the
-		// indexer's own deployment owns its network.
-		if err := verifyNetworkEndpoints(ctx, log, rpc, cfg.Network.Passphrase); err != nil {
-			return err
-		}
-		log.Info("network verified",
-			"network", cfg.Network.Name,
-			"rpc_url", cfg.RPCURL,
-			"rpc_endpoint_count", len(cfg.RPCURLs))
-
-		// Contract specs are fetched lazily per contract and cached, so
-		// events from a contract with a spec arrive with named fields while
-		// every other contract decodes exactly as before.
-		decoder := stellar.NewSpecDecoder(stellar.DefaultDecoder{}, stellar.NewRPCSpecSource(rpc), log)
-		src = poller.NewRPCSource(rpc, decoder)
-		health = rpc
 	}
 	logStartupHealth(ctx, log, health)
 
@@ -291,20 +257,28 @@ func buildSource(ctx context.Context, log *slog.Logger, cfg config.Config) (poll
 		log.Info("upstream mode: reading events from SoroTrail", "url", cfg.SoroTrailURL)
 		return sorotrail.NewSource(stc), stc, nil
 	default: // "rpc"
-		rpc := stellar.NewHTTPClient(cfg.RPCURL, nil)
+		// Several endpoints behind one Client: calls try them in the order
+		// RPC_URLS lists them and fail over when one rate-limits or goes
+		// down. The poller, the spec source and the readiness probe all
+		// keep talking to a single stellar.Client, so nothing downstream
+		// knows the difference.
+		rpc := stellar.NewFailoverClient(cfg.RPCURLs, nil, log)
 
-		// Verify the RPC endpoint really is the configured network before
-		// any monitor starts evaluating events. A mainnet endpoint behind
-		// a testnet config (or the reverse) silently evaluates every rule
-		// against the wrong chain — this fails fast instead. There is no
-		// equivalent check in upstream mode: the indexer's own deployment
-		// owns its network.
-		if net, err := rpc.GetNetwork(ctx); err != nil {
-			log.Warn("could not verify network passphrase", "error", err)
-		} else if err := config.VerifyPassphrase(cfg.Network.Passphrase, net.Passphrase); err != nil {
+		// Verify every RPC endpoint really is the configured network before
+		// any monitor starts evaluating events. A mainnet endpoint behind a
+		// testnet config (or the reverse) silently evaluates every rule
+		// against the wrong chain, and because failover picks a node per
+		// call, one mixed endpoint would corrupt the alert stream
+		// intermittently — the hardest kind of bug to notice. This fails
+		// fast instead. There is no equivalent check in upstream mode: the
+		// indexer's own deployment owns its network.
+		if err := verifyNetworkEndpoints(ctx, log, rpc, cfg.Network.Passphrase); err != nil {
 			return nil, nil, err
 		}
-		log.Info("network verified", "network", cfg.Network.Name, "rpc_url", cfg.RPCURL)
+		log.Info("network verified",
+			"network", cfg.Network.Name,
+			"rpc_url", cfg.RPCURL,
+			"rpc_endpoint_count", len(cfg.RPCURLs))
 
 		// Contract specs are fetched lazily per contract and cached, so
 		// events from a contract with a spec arrive with named fields while

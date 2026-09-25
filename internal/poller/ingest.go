@@ -139,6 +139,7 @@ func (in *Ingestor) fireAlert(ctx context.Context, m store.Monitor, rule store.R
 		RuleID:         rule.ID,
 		EventID:        eventID,
 		Payload:        payload,
+		Ledger:         ev.Ledger,
 		LedgerClosedAt: ev.LedgerClosedAt,
 		Cooldown:       ruleCooldown(rule),
 		Backfilled:     opts.Backfilled,

@@ -213,6 +213,8 @@ type Backfill struct {
 	Deliver    bool      `json:"deliver"`
 	Complete   bool      `json:"complete"`
 	UpdatedAt  time.Time `json:"updated_at"`
+}
+
 // LedgerHash is one recently ingested ledger's identity. The poller records
 // these as it advances and re-reads them each cycle; a ledger whose hash
 // changes is the signature of a chain reorganisation.
@@ -431,6 +433,8 @@ type Ingest interface {
 type Backfills interface {
 	GetBackfill(ctx context.Context, monitorID int64) (Backfill, error)
 	UpsertBackfill(ctx context.Context, b *Backfill) error
+}
+
 // SavedSearch is a named, reusable alert filter combination.
 type SavedSearch struct {
 	ID        int64             `json:"id"`
