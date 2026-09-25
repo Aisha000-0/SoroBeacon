@@ -500,6 +500,19 @@ type MonitorTemplates interface {
 	DeleteMonitorTemplate(ctx context.Context, id int64) error
 }
 
+// BackupChannel is a Channel with its Config included for configuration
+// export. The normal Channel tags Config with json:"-" to prevent leaks
+// through the API; the backup path needs the decrypted config and controls
+// its own output.
+type BackupChannel struct {
+	ID        int64           `json:"id"`
+	Name      string          `json:"name"`
+	Type      string          `json:"type"`
+	Config    json.RawMessage `json:"config"`
+	Enabled   bool            `json:"enabled"`
+	CreatedAt time.Time       `json:"created_at"`
+}
+
 // Store is everything the application needs from persistence.
 type Store interface {
 	Monitors
