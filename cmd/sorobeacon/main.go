@@ -21,6 +21,7 @@ import (
 	"github.com/sorotrail/sorobeacon/internal/archive"
 	"github.com/sorotrail/sorobeacon/internal/auth"
 	"github.com/sorotrail/sorobeacon/internal/config"
+	sorogrpc "github.com/sorotrail/sorobeacon/internal/grpc"
 	"github.com/sorotrail/sorobeacon/internal/metrics"
 	"github.com/sorotrail/sorobeacon/internal/notify"
 	"github.com/sorotrail/sorobeacon/internal/poller"
@@ -41,6 +42,20 @@ import (
 func main() {
 	args := os.Args[1:]
 	if len(args) > 0 {
+		switch args[0] {
+		case "backup":
+			if err := runBackup(args[1:]); err != nil {
+				slog.Error("backup failed", "err", err)
+				os.Exit(1)
+			}
+			return
+		case "restore":
+			if err := runRestore(args[1:]); err != nil {
+				slog.Error("restore failed", "err", err)
+				os.Exit(1)
+			}
+			return
+		}
 		if err := runCLI(context.Background(), args, os.Stdout); err != nil {
 			reportCLIError(os.Stderr, err)
 			os.Exit(1)
@@ -230,6 +245,14 @@ func run() error {
 		}
 	}()
 	go p.Run(ctx)
+	if cfg.GRPCAddr != "" {
+		grpcSrv := sorogrpc.New(st, authn, log)
+		go func() {
+			if err := grpcSrv.Serve(ctx, cfg.GRPCAddr); err != nil {
+				log.Error("grpc server error", "err", err)
+			}
+		}()
+	}
 	// Retention can tier expired alerts to object storage before deleting
 	// them. Off by default: an empty ARCHIVE_URL leaves the pruner behaving
 	// exactly as it did before archiving existed.
