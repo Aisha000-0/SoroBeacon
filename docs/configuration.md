@@ -35,7 +35,27 @@ column; see [Channel config encryption](#channel-config-encryption).
 
 | Variable | Type | Default | Required | What it does |
 | --- | --- | --- | --- | --- |
-| `DATABASE_URL` | URL string | _(none)_ | **required** | Postgres connection string in pgx form, e.g. `postgres://user:pass@host:5432/sorobeacon?sslmode=disable`. Load fails if it is empty. |
+| `DATABASE_URL` | URL string | _(none)_ | **required** | Connection string whose scheme selects the backend. `postgres` / `postgresql` → a Postgres server (pgx pool), e.g. `postgres://user:pass@host:5432/sorobeacon?sslmode=disable`. `sqlite` → a single database file, e.g. `sqlite:///var/lib/sorobeacon/sorobeacon.db`, with no server to run. Load fails if it is empty; a Postgres URL must carry a host and a SQLite URL a file path. Errors never echo a password. |
+
+### SQLite backend
+
+`sqlite://<path>` stores everything in one file and needs no Postgres. The
+parent directory is created if it is missing, and the database runs in WAL
+mode. It is aimed at a single instance — one contract on a small VPS or a
+Raspberry Pi.
+
+**Writes serialise.** SQLite allows one writer at a time, so the store holds
+the write lock for the duration of a write transaction (it uses `BEGIN
+IMMEDIATE` and a single connection). The alert cooldown, which Postgres
+enforces with `SELECT ... FOR UPDATE`, is enforced the same way and with the
+same result — one alert per window — but write throughput is bounded by that
+one writer. Reads run concurrently under WAL. Do not point several SoroBeacon
+instances at one SQLite file; use Postgres for that.
+
+The `DATABASE_MAX_CONNS`, `DATABASE_MIN_CONNS`,
+`DATABASE_MAX_CONN_LIFETIME` and `DATABASE_MAX_CONN_IDLE_TIME` variables tune
+the **Postgres** pool. Setting any of them with a `sqlite` URL is a startup
+error rather than a setting that silently does nothing.
 
 ## API authentication
 
@@ -166,6 +186,28 @@ backoff, and the same per-endpoint failure counts are exposed by
 Only applies to `SOURCE_MODE=rpc` in practice (the standalone poller).
 Upstream (`sorotrail`) reads the indexer; this interval is still loaded
 but the poller is not the source.
+
+### Reorg detection
+
+The poller records the hash of each recently ingested ledger and re-reads the
+window every cycle. A ledger whose hash changes is a chain reorganisation, and
+the alerts derived from the orphaned range are marked retracted — kept, never
+deleted, because a delivered notification cannot be unsent. Reorgs are logged
+at `warn` and counted in `sorobeacon_reorgs_total`.
+
+| Variable | Type | Default | Required | What it does |
+| --- | --- | --- | --- | --- |
+| `REORG_TRACKING_WINDOW` | integer (ledgers) | `128` | optional | How many recent ledger hashes to keep and re-check. `0` disables detection (the behaviour before the feature). Roughly ten minutes of Stellar history at the default, and one `getLedgers` call per cycle. A source that cannot report ledger hashes (SoroTrail, or an RPC node too old for `getLedgers`) simply has no detection. |
+| `REORG_CONFIRMATION_DEPTH` | integer (ledgers) | `0` | optional | Hold an event until it is this many ledgers behind the tip before evaluating it. Trades alert latency for fewer retractions; `0` alerts immediately, the historical default. |
+
+## Retention and archiving
+
+| Variable | Type | Default | Required | What it does |
+| --- | --- | --- | --- | --- |
+| `ALERT_RETENTION` | duration or `<n>d` | empty (keep forever) | optional | How long alerts (and their delivery attempts) are kept. Unset keeps history forever, so an upgrade never starts deleting. On Postgres, retention first drops whole expired monthly partitions (effectively free) and then deletes the ragged edge in batches of 1000. |
+| `ARCHIVE_URL` | URL or path | empty (archiving off) | optional | Where retention copies a batch of expired alerts before deleting them. A local directory path, `file://`, `dir://`, or `s3://bucket/prefix` (region from `?region=` or `AWS_REGION`; credentials from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`; `?endpoint=` for MinIO or a test server). A failed archive blocks that batch's delete, so nothing is dropped un-archived. Requires `ALERT_RETENTION` to have any effect. Archive objects are NDJSON, one alert per line, keyed by the batch's own id range so re-running is idempotent. |
+
+Archive objects contain only alert rows (contract id, event, payload, ledger); channel `config` — the webhook URLs, bot tokens and SMTP credentials — is never read by the archiver and can never appear in one.
 
 ## Logging
 
