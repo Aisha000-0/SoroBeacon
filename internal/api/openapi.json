@@ -662,6 +662,23 @@
         }
       }
     },
+    "/poller": {
+      "get": {
+        "summary": "Poller position and lag",
+        "description": "Reports the last successful poll position, chain tip, ledger lag, and whether the poller is currently backing off. Before the first successful poll, position fields are omitted and status is waiting. No configuration values are returned.",
+        "responses": {
+          "200": {
+            "description": "Poller status",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PollerStatus" }
+              }
+            }
+          },
+          "503": { "description": "Poller is not configured" }
+        }
+      }
+    },
     "/version": {
       "get": {
         "summary": "Build information",
@@ -1179,6 +1196,18 @@
           "version": { "type": "string" },
           "commit": { "type": "string" },
           "build_date": { "type": "string" }
+        }
+      },
+      "PollerStatus": {
+        "type": "object",
+        "required": ["status", "backing_off"],
+        "properties": {
+          "status": { "type": "string", "enum": ["waiting", "ok"] },
+          "last_processed_ledger": { "type": "integer", "format": "int64" },
+          "latest_chain_ledger": { "type": "integer", "format": "int64" },
+          "ledger_lag": { "type": "integer", "format": "int64" },
+          "last_successful_poll": { "type": "string", "format": "date-time" },
+          "backing_off": { "type": "boolean" }
         }
       },
       "MonitorTemplate": {

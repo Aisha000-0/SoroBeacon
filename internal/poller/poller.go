@@ -22,6 +22,7 @@ type Position struct {
 	LastProcessedLedger uint32
 	LatestChainLedger   uint32
 	LastSuccessfulPoll  time.Time
+	BackingOff          bool
 }
 
 // Ready reports whether a successful poll has completed.
@@ -102,6 +103,12 @@ func (p *Poller) recordPosition(processed, latest uint32, at time.Time) {
 	})
 }
 
+func (p *Poller) recordBackoff(backingOff bool) {
+	position := p.Position()
+	position.BackingOff = backingOff
+	p.pos.Store(position)
+}
+
 // New wires a Poller. src is where events come from: NewRPCSource for a
 // Stellar RPC node, or the SoroTrail source for upstream mode.
 func New(src EventSource, st Store, reg *rules.Registry, d Dispatcher, interval time.Duration, log *slog.Logger) *Poller {
@@ -157,10 +164,12 @@ func (p *Poller) Run(ctx context.Context) {
 				continue
 			}
 			delay = min(delay*2, 10*p.interval)
+			p.recordBackoff(true)
 			p.log.Error("poll failed", "err", err, "retry_in", delay)
 			continue
 		}
 		delay = p.interval
+		p.recordBackoff(false)
 	}
 }
 
