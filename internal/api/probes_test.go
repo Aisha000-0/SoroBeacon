@@ -35,13 +35,13 @@ func (f *fakeStore) Ping(ctx context.Context) error { return f.pingErr }
 func (f *fakeStore) ListSavedSearches(context.Context) ([]store.SavedSearch, error) {
 	return nil, nil
 }
-func (f *fakeStore) CreateSavedSearch(context.Context, *store.SavedSearch) error   { return nil }
+func (f *fakeStore) CreateSavedSearch(context.Context, *store.SavedSearch) error { return nil }
 func (f *fakeStore) GetSavedSearch(context.Context, int64) (*store.SavedSearch, error) {
 	return nil, store.ErrNotFound
 }
-func (f *fakeStore) DeleteSavedSearch(context.Context, int64) error        { return nil }
-func (f *fakeStore) SetDefaultSearch(context.Context, int64) error         { return nil }
-func (f *fakeStore) ClearDefaultSearch(context.Context, int64) error       { return nil }
+func (f *fakeStore) DeleteSavedSearch(context.Context, int64) error                      { return nil }
+func (f *fakeStore) SetDefaultSearch(context.Context, int64) error                       { return nil }
+func (f *fakeStore) ClearDefaultSearch(context.Context, int64) error                     { return nil }
 func (f *fakeStore) CreateMonitorTemplate(context.Context, *store.MonitorTemplate) error { return nil }
 func (f *fakeStore) GetMonitorTemplate(context.Context, int64) (*store.MonitorTemplate, error) {
 	return nil, store.ErrNotFound
