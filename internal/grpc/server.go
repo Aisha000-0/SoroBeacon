@@ -236,7 +236,7 @@ type streamAlertsStream struct {
 }
 
 func (s *streamAlertsStream) Send(m *AlertProto) error {
-	return s.ServerStream.SendMsg(m)
+	return s.SendMsg(m)
 }
 
 func (s *streamAlertsStream) Context() context.Context {
