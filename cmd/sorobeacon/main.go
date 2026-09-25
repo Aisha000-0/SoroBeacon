@@ -1,5 +1,6 @@
 // Command sorobeacon runs the SoroBeacon monitoring service: the event
-// poller, the JSON API and the dashboard, all in one process.
+// poller, the JSON API and the dashboard, all in one process. Given any
+// argument it acts as a CLI for a running instance instead — see cli.go.
 package main
 
 import (
@@ -31,7 +32,21 @@ import (
 	"github.com/sorotrail/sorobeacon/internal/web"
 )
 
+// main dispatches on the arguments. With none, the binary is the monitoring
+// service — how the container image and every existing deployment invoke it.
+// With any, it is a client for a running instance, so bootstrapping and
+// scripted changes stop needing a curl script. An unrecognised command is an
+// error rather than a silent server start, because a typo'd subcommand is
+// otherwise impossible to notice.
 func main() {
+	args := os.Args[1:]
+	if len(args) > 0 {
+		if err := runCLI(context.Background(), args, os.Stdout); err != nil {
+			reportCLIError(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		slog.Error("fatal", "err", err)
 		os.Exit(1)
